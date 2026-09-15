@@ -94,7 +94,7 @@ const DEFAULT_TEAMS = [
   { id: "kids", name: "Kids Ministry", flexible: false, roles: [
       { id: "teacher", name: "Teacher" },
       { id: "asst-teacher", name: "Assistant Teacher" },
-      { id: "huddle", name: "Huddle Leader" },
+      { id: "huddle", name: "Huddle Leader/Pre-Teens" },
   ]},
   { id: "tech", name: "Tech Team", flexible: false, roles: [
       { id: "tech", name: "Tech / Sound" },
@@ -105,7 +105,7 @@ const DEFAULT_TEAMS = [
       { id: "greeting", name: "Greeting" },
   ]},
   { id: "prayer", name: "Prayer Team", flexible: true, roles: [
-      { id: "prayer", name: "Prayer" },
+      { id: "prayer", name: "Team JESUS Prayer" },
   ]},
 ];
 
@@ -201,7 +201,7 @@ function defaultPrintProgram() {
       { id: "sec-huddle", kind: "group", program: "HUDDLE", rows: [
         { id: "r-flowrecap", time: "08:30 – 08:50", duration: "20 MINS", task: "PROGRAM FLOW RECAP", linkedRole: roleTag("admin", "flow") },
         { id: "r-encourage", time: "", duration: "", task: "WORD OF ENCOURAGEMENT", linkedRole: roleTag("admin", "encouragement") },
-        { id: "r-teamprayer", time: "", duration: "", task: "TEAM PRAYER", linkedRole: roleTag("prayer", "prayer") },
+        { id: "r-teamprayer", time: "", duration: "", task: "TEAM JESUS PRAYER", linkedRole: roleTag("prayer", "prayer") },
       ]},
       { id: "sec-prehouse", kind: "group", program: "", rows: [
         { id: "r-house1", time: "08:40 – 08:55", duration: "15 MINS", task: "Play In House Music (Victory Worship)" },
