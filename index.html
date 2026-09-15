@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="description" content="Assign volunteers and catch double-bookings across ministry teams." />
+<meta name="theme-color" content="#23211D" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Scheduler" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="icon" href="./icons/victory.png" />
+<link rel="apple-touch-icon" href="./icons/victory.png" />
+<title>Ministry Scheduler</title>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+</head>
+<body style="margin:0;">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ============================================================
+// Ministry Scheduler — standalone installable version, synced
+// live across everyone using it via Firebase Realtime Database.
+// ============================================================
+
+// ---- 1) PASTE YOUR FIREBASE CONFIG HERE ----
+const firebaseConfig = {
+  apiKey: "AIzaSyDXePNefGXSH9OyvdnV1j0A1-13IM4QDQQ",
+  authDomain: "ministry-scheduler-7b834.firebaseapp.com",
+  databaseURL: "https://ministry-scheduler-7b834-default-rtdb.firebaseio.com",
+  projectId: "ministry-scheduler-7b834",
+  storageBucket: "ministry-scheduler-7b834.firebasestorage.app",
+  messagingSenderId: "854617979344",
+  appId: "1:854617979344:web:f012af287911307547e1d5",
+};
+
+const FIREBASE_CONFIGURED = !Object.values(firebaseConfig).some(
+  (v) => typeof v === "string" && v.startsWith("PASTE_YOUR")
+);
+
+let configRef = null;
+if (FIREBASE_CONFIGURED) {
+  firebase.initializeApp(firebaseConfig);
+  configRef = firebase.database().ref("ministry-scheduler-config");
+}
+
+const STORAGE_KEY = "ministry-scheduler-state-v1";
+const SLOTS = ["9:00 AM", "11:00 AM"];
+const WEEKS = [1, 2, 3, 4, 5];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+function periodKey(year, month) {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+function monthLabel(year, month) {
+  return `${MONTH_NAMES[month - 1]} ${year}`;
+}
+function monthRef(year, month) {
+  return firebase.database().ref(`ministry-scheduler-months/${periodKey(year, month)}`);
+}
+
+const DEFAULT_TEAMS = [
+  { id: "admin", name: "Service Lead", flexible: false, roles: [
+      { id: "flow", name: "Program Flow" },
+      { id: "encouragement", name: "Word of Encouragement" },
+      { id: "ctw", name: "Call to Worship" },
+      { id: "giving", name: "Giving" },
+      { id: "word", name: "Word" },
+      { id: "benediction", name: "Benediction" },
+  ]},
+  { id: "music", name: "Worship Team", flexible: false, roles: [
+      { id: "worship-leader", name: "Worship Leader" },
+      { id: "song-leader", name: "Song Leader" },
+      { id: "guitar", name: "Guitar" },
+      { id: "drums", name: "Drums" },
+  ]},
+  { id: "kids", name: "Kids Ministry", flexible: false, roles: [
+      { id: "teacher", name: "Teacher" },
+      { id: "asst-teacher", name: "Assistant Teacher" },
+      { id: "huddle", name: "Huddle Leader" },
+  ]},
+  { id: "tech", name: "Tech Team", flexible: false, roles: [
+      { id: "tech", name: "Tech / Sound" },
+  ]},
+  { id: "ushers", name: "Ushers", flexible: false, roles: [
+      { id: "leader", name: "Team Leader" },
+      { id: "parking", name: "Parking" },
+      { id: "greeting", name: "Greeting" },
+  ]},
+  { id: "prayer", name: "Prayer Team", flexible: true, roles: [
+      { id: "prayer", name: "Prayer" },
+  ]},
+];
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+const norm = (s) => (s || "").toString().trim();
+const normKey = (s) => norm(s).toLowerCase();
+const pairKey = (a, b) => [a, b].sort().join("~");
+const assignKey = (week, slot, teamId, roleId) => `${week}|${slot}|${teamId}|${roleId}`;
+const roleTag = (teamId, roleId) => `${teamId}::${roleId}`;
+const rolePairKey = (tagA, tagB) => [tagA, tagB].sort().join("~~");
+
+// ---- Who's logged in ----
+const CLIENT_ID_KEY = "ministry-scheduler-client-id";
+const USER_NAME_KEY = "ministry-scheduler-user-name";
+
+function getClientId() {
+  let id = localStorage.getItem(CLIENT_ID_KEY);
+  if (!id) {
+    id = uid() + uid();
+    localStorage.setItem(CLIENT_ID_KEY, id);
+  }
+  return id;
+}
+
+function getStoredName() {
+  return norm(localStorage.getItem(USER_NAME_KEY) || "");
+}
+
+function emptyConfig() {
+  return { teams: DEFAULT_TEAMS, compatiblePairs: [], compatibleRolePairs: [], restrictions: {} };
+}
+function emptyMonthState() {
+  return { assignments: {}, weekLabels: {} };
+}
+
+function isCompatible(teamAId, teamBId, teams, compatiblePairs) {
+  if (teamAId === teamBId) return true;
+  const a = teams.find((t) => t.id === teamAId);
+  const b = teams.find((t) => t.id === teamBId);
+  if ((a && a.flexible) || (b && b.flexible)) return true;
+  return compatiblePairs.includes(pairKey(teamAId, teamBId));
+}
+
+function findIssues(config, monthState, week, slot, teamId, roleId, name) {
+  const target = normKey(name);
+  if (!target) return [];
+  const issues = [];
+  const selfKey = assignKey(week, slot, teamId, roleId);
+  const selfTag = roleTag(teamId, roleId);
+  for (const [key, val] of Object.entries(monthState.assignments)) {
+    if (key === selfKey) continue;
+    if (normKey(val) !== target) continue;
+    const [w, s, tId, rId] = key.split("|");
+    if (Number(w) !== week || s !== slot) continue;
+    const otherTeam = config.teams.find((t) => t.id === tId);
+    const otherRole = otherTeam && otherTeam.roles.find((r) => r.id === rId);
+    if (!otherTeam || !otherRole) continue;
+
+    const otherTag = roleTag(tId, rId);
+    const explicitlyAllowed = (config.compatibleRolePairs || []).includes(rolePairKey(selfTag, otherTag));
+    if (explicitlyAllowed) continue;
+
+    if (tId === teamId) {
+      issues.push({ type: "duplicate", team: otherTeam, role: otherRole });
+    } else if (!isCompatible(teamId, tId, config.teams, config.compatiblePairs)) {
+      issues.push({ type: "conflict", team: otherTeam, role: otherRole });
+    }
+  }
+  return issues;
+}
+
+function SetupScreen() {
+  return (
+    <div style={styles.setupScreen}>
+      <div style={styles.setupCard}>
+        <h1 style={{ ...styles.h1, marginBottom: 10 }}>One setup step left</h1>
+        <p style={styles.setupText}>
+          This app is built to sync live across everyone using it, but it
+          needs a free Firebase database to do that. Open{" "}
+          <code style={styles.code}>index.html</code> in a text editor, find
+          the <code style={styles.code}>firebaseConfig</code> block near the
+          top of the script, and paste in your project's config.
+        </p>
+        <p style={styles.setupText}>
+          Full step-by-step instructions are in <code style={styles.code}>README.txt</code>.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function NameGate({ onSubmit }) {
+  const [name, setName] = useState("");
+  const submit = () => {
+    const clean = norm(name);
+    if (!clean) return;
+    localStorage.setItem(USER_NAME_KEY, clean);
+    onSubmit(clean);
+  };
+  return (
+    <div style={styles.setupScreen}>
+      <div style={styles.setupCard}>
+        <h1 style={{ ...styles.h1, marginBottom: 10 }}>Who's this?</h1>
+        <p style={styles.setupText}>
+          Enter your name so others can see who's currently using the
+          scheduler. This is remembered on this device only.
+        </p>
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <input value={name} onChange={(e) => setName(e.target.value)}
+            placeholder="Your name" style={styles.input}
+            onKeyDown={(e) => { if (e.key === "Enter") submit(); }} autoFocus />
+          <button onClick={submit} style={styles.smallBtn}>Continue</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [config, setConfig] = useState(null);
+  const [monthState, setMonthState] = useState(null);
+  const [week, setWeek] = useState(1);
+  const [slot, setSlot] = useState(SLOTS[0]);
+  const [activeTeamId, setActiveTeamId] = useState(DEFAULT_TEAMS[0].id);
+  const [tab, setTab] = useState("assign");
+  const [userName, setUserName] = useState(getStoredName());
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const saveTimer = useRef(null);
+  const configSaveTimer = useRef(null);
+  const migratedRef = useRef(false);
+
+  useEffect(() => {
+    if (!FIREBASE_CONFIGURED) return;
+    const listener = configRef.on("value", (snapshot) => {
+      const val = snapshot.val();
+      if (val) {
+        setConfig({ ...emptyConfig(), ...val });
+        return;
+      }
+      if (migratedRef.current) return;
+      migratedRef.current = true;
+      firebase.database().ref("ministry-scheduler-state").once("value").then((oldSnap) => {
+        const old = oldSnap.val();
+        if (old && (old.teams || old.assignments)) {
+          const conf = { teams: old.teams || DEFAULT_TEAMS, compatiblePairs: old.compatiblePairs || [], compatibleRolePairs: old.compatibleRolePairs || [], restrictions: old.restrictions || {} };
+          configRef.set(conf);
+          setConfig(conf);
+          const curKey = periodKey(now.getFullYear(), now.getMonth() + 1);
+          firebase.database().ref(`ministry-scheduler-months/${curKey}`).set({
+            assignments: old.assignments || {},
+            weekLabels: old.weekLabels || {},
+          });
+        } else {
+          const conf = emptyConfig();
+          configRef.set(conf);
+          setConfig(conf);
+        }
+      });
+    });
+    return () => configRef.off("value", listener);
+  }, []);
+
+  useEffect(() => {
+    if (!FIREBASE_CONFIGURED) return;
+    setMonthState(null);
+    const ref = monthRef(year, month);
+    const listener = ref.on("value", (snapshot) => {
+      setMonthState({ ...emptyMonthState(), ...(snapshot.val() || {}) });
+    });
+    return () => ref.off("value", listener);
+  }, [year, month]);
+
+  useEffect(() => {
+    if (!FIREBASE_CONFIGURED || !userName) return;
+    const clientId = getClientId();
+    const myPresenceRef = firebase.database().ref(`presence/${clientId}`);
+    const connectedRef = firebase.database().ref(".info/connected");
+    const onConnected = connectedRef.on("value", (snap) => {
+      if (snap.val() === true) {
+        myPresenceRef.onDisconnect().remove();
+        myPresenceRef.set({ name: userName, since: firebase.database.ServerValue.TIMESTAMP });
+      }
+    });
+    const presenceListRef = firebase.database().ref("presence");
+    const onPresence = presenceListRef.on("value", (snapshot) => {
+      const val = snapshot.val() || {};
+      setOnlineUsers(Object.entries(val).map(([id, v]) => ({ id, ...v })));
+    });
+    return () => {
+      connectedRef.off("value", onConnected);
+      presenceListRef.off("value", onPresence);
+      myPresenceRef.remove();
+    };
+  }, [userName]);
+
+  const updateConfig = useCallback((updater) => {
+    setConfig((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      clearTimeout(configSaveTimer.current);
+      configSaveTimer.current = setTimeout(() => {
+        if (configRef) configRef.set(next);
+      }, 300);
+      return next;
+    });
+  }, []);
+
+  const updateMonthState = useCallback((updater) => {
+    setMonthState((prev) => {
+      const base = prev || emptyMonthState();
+      const next = typeof updater === "function" ? updater(base) : updater;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        monthRef(year, month).set(next);
+      }, 300);
+      return next;
+    });
+  }, [year, month]);
+
+  const shiftMonth = (delta) => {
+    let m = month + delta;
+    let y = year;
+    while (m > 12) { m -= 12; y += 1; }
+    while (m < 1) { m += 12; y -= 1; }
+    setMonth(m);
+    setYear(y);
+  };
+
+  const restrictedTeamId = config ? (config.restrictions || {})[normKey(userName)] : undefined;
+
+  useEffect(() => {
+    if (!restrictedTeamId) return;
+    if (activeTeamId !== restrictedTeamId) setActiveTeamId(restrictedTeamId);
+    if (tab === "manage") setTab("assign");
+  }, [restrictedTeamId, activeTeamId, tab]);
+
+  if (!FIREBASE_CONFIGURED) return <SetupScreen />;
+  if (!userName) return <NameGate onSubmit={setUserName} />;
+  if (!config || !monthState) {
+    return (
+      <div style={styles.setupScreen}>
+        <div style={styles.setupText}>Connecting…</div>
+      </div>
+    );
+  }
+
+  const activeTeam = restrictedTeamId
+    ? config.teams.find((t) => t.id === restrictedTeamId) || config.teams[0]
+    : config.teams.find((t) => t.id === activeTeamId) || config.teams[0];
+  const effectiveTab = restrictedTeamId && tab === "manage" ? "assign" : tab;
+
+  return (
+    <div style={styles.app}>
+      <Sidebar config={config} monthState={monthState} week={week} setWeek={setWeek} slot={slot} setSlot={setSlot}
+        tab={effectiveTab} setTab={setTab} activeTeamId={activeTeam && activeTeam.id}
+        setActiveTeamId={setActiveTeamId} userName={userName} onlineUsers={onlineUsers}
+        restrictedTeamId={restrictedTeamId} monthLabelText={monthLabel(year, month)}
+        onPrevMonth={() => shiftMonth(-1)} onNextMonth={() => shiftMonth(1)} />
+      <main style={styles.main}>
+        {effectiveTab === "assign" && (
+          <AssignView config={config} monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot} team={activeTeam}
+            locked={!!restrictedTeamId && activeTeam && activeTeam.id !== restrictedTeamId} />
+        )}
+        {effectiveTab === "master" && <MasterListView config={config} monthState={monthState} week={week} slot={slot} />}
+        {effectiveTab === "manage" && !restrictedTeamId && (
+          <ManageView config={config} updateConfig={updateConfig} monthState={monthState} updateMonthState={updateMonthState}
+            monthLabelText={monthLabel(year, month)} />
+        )}
+      </main>
+
+    </div>
+  );
+}
+
+function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab, activeTeamId, setActiveTeamId, userName, onlineUsers, restrictedTeamId, monthLabelText, onPrevMonth, onNextMonth }) {
+  const others = (onlineUsers || []).filter((u) => norm(u.name).toLowerCase() !== norm(userName).toLowerCase());
+  const switchUser = () => {
+    localStorage.removeItem(USER_NAME_KEY);
+    window.location.reload();
+  };
+  return (
+    <aside style={styles.sidebar}>
+      <div>
+        <div style={styles.brand}>
+          <img src="./icons/victory.png" alt="" style={styles.brandMark} />
+          <div>
+            <div style={styles.brandTitle}>Ministry Scheduler</div>
+            <div style={styles.brandSub}>Synced live with everyone</div>
+          </div>
+        </div>
+
+        {userName && (
+          <div style={styles.whosHere}>
+            <div style={styles.sectionLabel}>Who's here</div>
+            <div style={styles.presenceRow}>
+              <span style={styles.presenceDot} />
+              <span style={styles.presenceName}>{userName} (you)</span>
+            </div>
+            {others.map((u) => (
+              <div key={u.id} style={styles.presenceRow}>
+                <span style={styles.presenceDot} />
+                <span style={styles.presenceName}>{u.name}</span>
+              </div>
+            ))}
+            <button onClick={switchUser} style={styles.switchUserLink}>Not you? Switch</button>
+          </div>
+        )}
+
+        <div style={styles.sectionLabel}>Month</div>
+        <div style={styles.monthNavRow}>
+          <button onClick={onPrevMonth} style={styles.monthNavBtn} aria-label="Previous month">‹</button>
+          <div style={styles.monthNavLabel}>{monthLabelText}</div>
+          <button onClick={onNextMonth} style={styles.monthNavBtn} aria-label="Next month">›</button>
+        </div>
+
+        <div style={styles.sectionLabel}>Service</div>
+        <div style={styles.weekRow}>
+          {WEEKS.map((w) => (
+            <button key={w} onClick={() => setWeek(w)}
+              style={{ ...styles.weekBtn, ...(w === week ? styles.weekBtnActive : {}) }}>
+              {w}
+            </button>
+          ))}
+        </div>
+        {monthState.weekLabels[week] ? <div style={styles.weekDateLabel}>{monthState.weekLabels[week]}</div> : null}
+
+        <div style={styles.slotRow}>
+          {SLOTS.map((s) => (
+            <button key={s} onClick={() => setSlot(s)}
+              style={{ ...styles.slotBtn, ...(s === slot ? styles.slotBtnActive : {}) }}>
+              {s}
+            </button>
+          ))}
+        </div>
+
+        <div style={styles.sectionLabel}>View</div>
+        <nav style={styles.navList}>
+          <NavItem label="Assign volunteers" active={tab === "assign"} onClick={() => setTab("assign")} />
+          <NavItem label="Master list" active={tab === "master"} onClick={() => setTab("master")} />
+          {!restrictedTeamId && (
+            <NavItem label="Manage teams" active={tab === "manage"} onClick={() => setTab("manage")} />
+          )}
+        </nav>
+
+        {tab === "assign" && (
+          <React.Fragment>
+            <div style={styles.sectionLabel}>Team</div>
+            <nav style={styles.navList}>
+              {config.teams.map((t) => {
+                const isLocked = !!restrictedTeamId && t.id !== restrictedTeamId;
+                return (
+                  <NavItem key={t.id} label={isLocked ? `🔒 ${t.name}` : t.name} active={t.id === activeTeamId}
+                    onClick={() => { if (!isLocked) setActiveTeamId(t.id); }} dim={t.flexible || isLocked}
+                    disabled={isLocked} />
+                );
+              })}
+            </nav>
+            {restrictedTeamId && (
+              <div style={styles.restrictedNote}>You can only edit this ministry.</div>
+            )}
+          </React.Fragment>
+        )}
+      </div>
+      <div style={styles.sidebarFoot}>
+        Everyone who opens this app sees the same live schedule. Install
+        it to your home screen so it's always one tap away.
+      </div>
+    </aside>
+  );
+}
+
+function NavItem({ label, active, onClick, dim, disabled }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      style={{ ...styles.navItem, ...(active ? styles.navItemActive : {}), ...(dim && !active ? { opacity: 0.7 } : {}),
+        ...(disabled ? { cursor: "default" } : {}) }}>
+      {label}
+    </button>
+  );
+}
+
+function AssignView({ config, monthState, updateMonthState, week, slot, team, locked }) {
+  if (!team) return null;
+  const setName = (roleId, value) => {
+    if (locked) return;
+    updateMonthState((prev) => {
+      const key = assignKey(week, slot, team.id, roleId);
+      const nextAssignments = { ...prev.assignments };
+      if (norm(value)) nextAssignments[key] = value;
+      else delete nextAssignments[key];
+      return { ...prev, assignments: nextAssignments };
+    });
+  };
+  return (
+    <div style={styles.viewWrap}>
+      <header style={styles.viewHeader}>
+        <h1 style={styles.h1}>{team.name}</h1>
+        <div style={styles.viewMeta}>
+          Week {week} · {slot}
+          {team.flexible && <span style={styles.flexTag}>compatible with every team</span>}
+          {locked && <span style={styles.flexTag}>view only — you can only edit your ministry</span>}
+        </div>
+      </header>
+      <div style={styles.rolesCard}>
+        {team.roles.length === 0 && <div style={styles.emptyNote}>This team has no roles yet. Add some under Manage teams.</div>}
+        {team.roles.map((role, i) => {
+          const key = assignKey(week, slot, team.id, role.id);
+          const value = monthState.assignments[key] || "";
+          const issues = findIssues(config, monthState, week, slot, team.id, role.id, value);
+          const hasConflict = issues.some((x) => x.type === "conflict");
+          const hasDup = issues.some((x) => x.type === "duplicate");
+          return (
+            <div key={role.id} style={{ ...styles.roleRow, borderTop: i === 0 ? "none" : "1px solid #E4DCC6" }}>
+              <div style={styles.roleName}>{role.name}</div>
+              <div style={styles.roleInputWrap}>
+                <input value={value} onChange={(e) => setName(role.id, e.target.value)}
+                  placeholder="Volunteer name" readOnly={locked}
+                  style={{ ...styles.input, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }} />
+                {issues.length > 0 && (
+                  <div style={{ ...styles.issueNote, color: hasConflict ? "#8C2F22" : "#8A6A1A" }}>
+                    {issues.map((iss, idx) => (
+                      <div key={idx}>
+                        {iss.type === "conflict" ? `Also booked for ${iss.team.name} — ${iss.role.name}` : `Also serving as ${iss.role.name} on this team`}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MasterListView({ config, monthState, week, slot }) {
+  const rows = [];
+  config.teams.forEach((team) => {
+    team.roles.forEach((role) => {
+      const key = assignKey(week, slot, team.id, role.id);
+      const name = monthState.assignments[key] || "";
+      const issues = name ? findIssues(config, monthState, week, slot, team.id, role.id, name) : [];
+      rows.push({ team, role, name, issues });
+    });
+  });
+  const filled = rows.filter((r) => r.name).length;
+  return (
+    <div style={styles.viewWrap}>
+      <header style={styles.viewHeader}>
+        <h1 style={styles.h1}>Master List</h1>
+        <div style={styles.viewMeta}>Week {week} · {slot} · {filled} of {rows.length} roles filled</div>
+      </header>
+      <div style={styles.masterCard}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Team</th>
+              <th style={styles.th}>Role</th>
+              <th style={styles.th}>Volunteer</th>
+              <th style={styles.th}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, idx) => {
+              const hasConflict = r.issues.some((x) => x.type === "conflict");
+              const hasDup = r.issues.some((x) => x.type === "duplicate");
+              return (
+                <tr key={idx} style={{ background: hasConflict ? "#FBE9E5" : hasDup ? "#FBF3DC" : idx % 2 === 0 ? "#FFFFFF" : "#FAF6EA" }}>
+                  <td style={styles.td}>{r.team.name}</td>
+                  <td style={styles.td}>{r.role.name}</td>
+                  <td style={{ ...styles.td, fontWeight: r.name ? 600 : 400 }}>{r.name || <span style={styles.tdMuted}>— open —</span>}</td>
+                  <td style={styles.td}>
+                    {hasConflict ? <span style={styles.badgeConflict}>Double-booked</span>
+                      : hasDup ? <span style={styles.badgeDup}>Also on this team</span>
+                      : r.name ? <span style={styles.badgeOk}>Confirmed</span>
+                      : <span style={styles.tdMuted}>—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ManageView({ config, updateConfig, monthState, updateMonthState, monthLabelText }) {
+  const [newTeamName, setNewTeamName] = useState("");
+  const [newRoleName, setNewRoleName] = useState({});
+  const [restrictName, setRestrictName] = useState("");
+  const [restrictTeamId, setRestrictTeamId] = useState("");
+  const [roleA, setRoleA] = useState("");
+  const [roleB, setRoleB] = useState("");
+
+  const allRoleOptions = config.teams.flatMap((t) =>
+    t.roles.map((r) => ({ tag: roleTag(t.id, r.id), label: `${t.name} — ${r.name}` }))
+  );
+  const addRolePair = () => {
+    if (!roleA || !roleB || roleA === roleB) return;
+    const key = rolePairKey(roleA, roleB);
+    updateConfig((prev) => ({
+      ...prev,
+      compatibleRolePairs: (prev.compatibleRolePairs || []).includes(key)
+        ? prev.compatibleRolePairs
+        : [...(prev.compatibleRolePairs || []), key],
+    }));
+    setRoleA("");
+    setRoleB("");
+  };
+  const removeRolePair = (key) => {
+    updateConfig((prev) => ({
+      ...prev,
+      compatibleRolePairs: (prev.compatibleRolePairs || []).filter((p) => p !== key),
+    }));
+  };
+
+  const addTeam = () => {
+    const name = norm(newTeamName);
+    if (!name) return;
+    updateConfig((prev) => ({ ...prev, teams: [...prev.teams, { id: uid(), name, flexible: false, roles: [] }] }));
+    setNewTeamName("");
+  };
+  const removeTeam = (teamId) => {
+    updateConfig((prev) => ({
+      ...prev,
+      teams: prev.teams.filter((t) => t.id !== teamId),
+      compatiblePairs: prev.compatiblePairs.filter((p) => !p.split("~").includes(teamId)),
+    }));
+  };
+  const renameTeam = (teamId, name) => {
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, name } : t)) }));
+  };
+  const toggleFlexible = (teamId) => {
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, flexible: !t.flexible } : t)) }));
+  };
+  const addRole = (teamId) => {
+    const name = norm(newRoleName[teamId]);
+    if (!name) return;
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: [...t.roles, { id: uid(), name }] } : t)) }));
+    setNewRoleName((prev) => ({ ...prev, [teamId]: "" }));
+  };
+  const removeRole = (teamId, roleId) => {
+    updateConfig((prev) => ({
+      ...prev,
+      teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.filter((r) => r.id !== roleId) } : t)),
+    }));
+  };
+  const renameRole = (teamId, roleId, name) => {
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.map((r) => (r.id === roleId ? { ...r, name } : r)) } : t)) }));
+  };
+  const togglePair = (aId, bId) => {
+    const key = pairKey(aId, bId);
+    updateConfig((prev) => ({ ...prev, compatiblePairs: prev.compatiblePairs.includes(key) ? prev.compatiblePairs.filter((p) => p !== key) : [...prev.compatiblePairs, key] }));
+  };
+  const setWeekLabel = (week, label) => {
+    updateMonthState((prev) => ({ ...prev, weekLabels: { ...prev.weekLabels, [week]: label } }));
+  };
+  const addRestriction = () => {
+    const name = normKey(restrictName);
+    if (!name || !restrictTeamId) return;
+    updateConfig((prev) => ({ ...prev, restrictions: { ...(prev.restrictions || {}), [name]: restrictTeamId } }));
+    setRestrictName("");
+    setRestrictTeamId("");
+  };
+  const removeRestriction = (name) => {
+    updateConfig((prev) => {
+      const next = { ...(prev.restrictions || {}) };
+      delete next[name];
+      return { ...prev, restrictions: next };
+    });
+  };
+
+  const rigidTeams = config.teams.filter((t) => !t.flexible);
+  const restrictionEntries = Object.entries(config.restrictions || {});
+
+  return (
+    <div style={styles.viewWrap}>
+      <header style={styles.viewHeader}>
+        <h1 style={styles.h1}>Manage Teams</h1>
+        <div style={styles.viewMeta}>Edit teams and roles, and decide which teams may share a volunteer at the same service.</div>
+      </header>
+      <div style={styles.manageGrid}>
+        {config.teams.map((team) => (
+          <div key={team.id} style={styles.teamCard}>
+            <div style={styles.teamCardHead}>
+              <input value={team.name} onChange={(e) => renameTeam(team.id, e.target.value)} style={styles.teamNameInput} />
+              <button onClick={() => removeTeam(team.id)} style={styles.linkDanger}>Remove team</button>
+            </div>
+            <label style={styles.flexToggle}>
+              <input type="checkbox" checked={!!team.flexible} onChange={() => toggleFlexible(team.id)} />
+              Compatible with every other team (like a prayer team)
+            </label>
+            <div style={styles.roleList}>
+              {team.roles.map((role) => (
+                <div key={role.id} style={styles.roleEditRow}>
+                  <input value={role.name} onChange={(e) => renameRole(team.id, role.id, e.target.value)} style={styles.roleEditInput} />
+                  <button onClick={() => removeRole(team.id, role.id)} style={styles.iconDanger} aria-label="Remove role">×</button>
+                </div>
+              ))}
+              <div style={styles.addRoleRow}>
+                <input value={newRoleName[team.id] || ""} onChange={(e) => setNewRoleName((prev) => ({ ...prev, [team.id]: e.target.value }))}
+                  placeholder="New role name" style={styles.roleEditInput}
+                  onKeyDown={(e) => { if (e.key === "Enter") addRole(team.id); }} />
+                <button onClick={() => addRole(team.id)} style={styles.smallBtn}>Add</button>
+              </div>
+            </div>
+          </div>
+        ))}
+        <div style={styles.newTeamCard}>
+          <div style={styles.newTeamLabel}>Add a new team</div>
+          <input value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} placeholder="e.g. Hospitality" style={styles.roleEditInput}
+            onKeyDown={(e) => { if (e.key === "Enter") addTeam(); }} />
+          <button onClick={addTeam} style={styles.smallBtn}>Add team</button>
+        </div>
+      </div>
+
+      {rigidTeams.length > 1 && (
+        <div style={{ marginTop: 28 }}>
+          <div style={styles.sectionLabel}>Allowed double-bookings (whole teams)</div>
+          <div style={styles.pairNote}>Check a pair if the same person is allowed to serve on both teams at the same service without being flagged.</div>
+          <div style={styles.pairGrid}>
+            {rigidTeams.map((a, i) => rigidTeams.slice(i + 1).map((b) => (
+              <label key={a.id + b.id} style={styles.pairItem}>
+                <input type="checkbox" checked={config.compatiblePairs.includes(pairKey(a.id, b.id))} onChange={() => togglePair(a.id, b.id)} />
+                {a.name} + {b.name}
+              </label>
+            )))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Allowed role combinations</div>
+        <div style={styles.pairNote}>
+          Piliin ang dalawang specific na role na pwedeng hawakan ng iisang tao
+          nang hindi na-flag, kahit same team o cross-team man ito.
+        </div>
+        <div style={styles.restrictAddRow}>
+          <select value={roleA} onChange={(e) => setRoleA(e.target.value)} style={styles.restrictSelect}>
+            <option value="">Unang role…</option>
+            {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+          </select>
+          <select value={roleB} onChange={(e) => setRoleB(e.target.value)} style={styles.restrictSelect}>
+            <option value="">Pangalawang role…</option>
+            {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+          </select>
+          <button onClick={addRolePair} style={styles.smallBtn}>Add</button>
+        </div>
+        {(config.compatibleRolePairs || []).length > 0 && (
+          <div style={styles.restrictList}>
+            {(config.compatibleRolePairs || []).map((key) => {
+              const [tagA, tagB] = key.split("~~");
+              const labelA = (allRoleOptions.find((r) => r.tag === tagA) || {}).label || tagA;
+              const labelB = (allRoleOptions.find((r) => r.tag === tagB) || {}).label || tagB;
+              return (
+                <div key={key} style={styles.restrictRow}>
+                  <span style={styles.restrictTeam}>{labelA} + {labelB}</span>
+                  <button onClick={() => removeRolePair(key)} style={styles.linkDanger}>Remove</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Week dates — {monthLabelText}</div>
+        <div style={styles.pairNote}>These week 1–5 dates are specific to the month shown above. Switch months in the sidebar to set dates for a different month.</div>
+        <div style={styles.weekLabelGrid}>
+          {WEEKS.map((w) => (
+            <label key={w} style={styles.weekLabelItem}>
+              <span>Week {w}</span>
+              <input value={monthState.weekLabels[w] || ""} onChange={(e) => setWeekLabel(w, e.target.value)} placeholder="e.g. July 6, 2026" style={styles.weekLabelInput} />
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Restrict editors to one ministry</div>
+        <div style={styles.pairNote}>
+          Type the exact name a person enters on the "Who's this?" screen and pick the one
+          ministry they're allowed to edit. Anyone not listed here can edit everything, as
+          usual. This applies across every month.
+        </div>
+        <div style={styles.restrictAddRow}>
+          <input value={restrictName} onChange={(e) => setRestrictName(e.target.value)}
+            placeholder="Name (as they'll type it)" style={styles.roleEditInput}
+            onKeyDown={(e) => { if (e.key === "Enter") addRestriction(); }} />
+          <select value={restrictTeamId} onChange={(e) => setRestrictTeamId(e.target.value)} style={styles.restrictSelect}>
+            <option value="">Choose ministry…</option>
+            {config.teams.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+          </select>
+          <button onClick={addRestriction} style={styles.smallBtn}>Add</button>
+        </div>
+        {restrictionEntries.length > 0 && (
+          <div style={styles.restrictList}>
+            {restrictionEntries.map(([name, teamId]) => {
+              const team = config.teams.find((t) => t.id === teamId);
+              return (
+                <div key={name} style={styles.restrictRow}>
+                  <span style={styles.restrictName}>{name}</span>
+                  <span style={styles.restrictTeam}>can only edit: {team ? team.name : "(deleted team)"}</span>
+                  <button onClick={() => removeRestriction(name)} style={styles.linkDanger}>Remove</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  app: { display: "flex", minHeight: "100vh", background: "#F6F1E4", color: "#2A2620", fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif' },
+  setupScreen: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F6F1E4", padding: 24 },
+  setupCard: { maxWidth: 520, background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 12, padding: 32 },
+  setupText: { fontFamily: "system-ui, sans-serif", fontSize: 14.5, lineHeight: 1.7, color: "#4A4230" },
+  code: { background: "#EFE7D3", padding: "1px 6px", borderRadius: 4, fontSize: 13 },
+  sidebar: { width: 260, flexShrink: 0, background: "#23211D", color: "#EFE7D3", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "24px 18px", boxSizing: "border-box" },
+  brand: { display: "flex", alignItems: "center", gap: 10, marginBottom: 26 },
+  brandMark: { width: 34, height: 34, borderRadius: 6, objectFit: "cover", flexShrink: 0 },
+  brandTitle: { fontFamily: "Georgia, serif", fontSize: 16.5, lineHeight: 1.2 },
+  brandSub: { fontSize: 11.5, color: "#B8AD8C", marginTop: 2, fontFamily: "system-ui, sans-serif" },
+  sectionLabel: { fontSize: 11, letterSpacing: 0.3, color: "#9B8F6C", margin: "20px 0 8px", fontFamily: "system-ui, sans-serif" },
+  whosHere: { marginBottom: 4 },
+  presenceRow: { display: "flex", alignItems: "center", gap: 7, padding: "3px 0", fontFamily: "system-ui, sans-serif", fontSize: 12.5, color: "#D9CFAF" },
+  presenceDot: { width: 7, height: 7, borderRadius: "50%", background: "#7FB07A", flexShrink: 0 },
+  presenceName: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  switchUserLink: { background: "none", border: "none", color: "#9B8F6C", fontSize: 11, cursor: "pointer", padding: "4px 0 0", fontFamily: "system-ui, sans-serif", textAlign: "left" },
+  restrictedNote: { fontSize: 11.5, color: "#9B8F6C", fontFamily: "system-ui, sans-serif", marginTop: 8, lineHeight: 1.5 },
+  weekRow: { display: "flex", gap: 6 },
+  monthNavRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, background: "#2B2820", border: "1px solid #3B3830", borderRadius: 6, padding: "6px 8px" },
+  monthNavBtn: { background: "transparent", border: "none", color: "#D9CFAF", fontSize: 17, cursor: "pointer", padding: "0 6px", lineHeight: 1 },
+  monthNavLabel: { fontFamily: "system-ui, sans-serif", fontSize: 13, color: "#EFE7D3", fontWeight: 600, textAlign: "center", flex: 1 },
+  weekBtn: { flex: 1, padding: "8px 0", borderRadius: 6, border: "1px solid #3B3830", background: "transparent", color: "#D9CFAF", cursor: "pointer", fontFamily: "system-ui, sans-serif", fontSize: 13 },
+  weekBtnActive: { background: "#A9782F", borderColor: "#A9782F", color: "#23211D", fontWeight: 700 },
+  weekDateLabel: { fontSize: 12, color: "#B8AD8C", marginTop: 8, fontFamily: "system-ui, sans-serif" },
+  slotRow: { display: "flex", flexDirection: "column", gap: 6, marginTop: 14 },
+  slotBtn: { padding: "9px 12px", borderRadius: 6, border: "1px solid #3B3830", background: "transparent", color: "#D9CFAF", cursor: "pointer", textAlign: "left", fontFamily: "system-ui, sans-serif", fontSize: 13.5 },
+  slotBtnActive: { background: "#2F4858", borderColor: "#2F4858", color: "#EFE7D3", fontWeight: 600 },
+  navList: { display: "flex", flexDirection: "column", gap: 3 },
+  navItem: { textAlign: "left", background: "transparent", border: "none", color: "#CFC49E", padding: "8px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "system-ui, sans-serif", fontSize: 13.5 },
+  navItemActive: { background: "#332F27", color: "#F3ECD8", fontWeight: 600 },
+  sidebarFoot: { fontSize: 11, color: "#867A5C", lineHeight: 1.5, fontFamily: "system-ui, sans-serif", borderTop: "1px solid #3B3830", paddingTop: 14 },
+  main: { flex: 1, padding: "40px 48px", overflowY: "auto" },
+  viewWrap: { maxWidth: 900 },
+  viewHeader: { marginBottom: 22 },
+  h1: { fontSize: 28, margin: 0, fontFamily: "Georgia, serif" },
+  viewMeta: { color: "#7A6E4E", fontSize: 13.5, marginTop: 6, fontFamily: "system-ui, sans-serif" },
+  flexTag: { marginLeft: 10, background: "#E7DEC2", color: "#5C5230", padding: "2px 8px", borderRadius: 20, fontSize: 11.5 },
+  rolesCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 10, overflow: "hidden" },
+  emptyNote: { padding: 20, color: "#8A7F5E", fontFamily: "system-ui, sans-serif", fontSize: 14 },
+  roleRow: { display: "flex", alignItems: "flex-start", padding: "16px 20px", gap: 20 },
+  roleName: { width: 220, flexShrink: 0, paddingTop: 9, fontSize: 15 },
+  roleInputWrap: { flex: 1 },
+  input: { width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 6, border: "1px solid #D8CFB0", fontSize: 14.5, fontFamily: "system-ui, sans-serif", color: "#2A2620", outline: "none" },
+  inputConflict: { borderColor: "#C24A3A", background: "#FBEEEA" },
+  inputDup: { borderColor: "#C9A227", background: "#FBF6E4" },
+  issueNote: { fontSize: 12.5, marginTop: 6, fontFamily: "system-ui, sans-serif", lineHeight: 1.5 },
+  masterCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 10, overflow: "hidden" },
+  table: { width: "100%", borderCollapse: "collapse", fontFamily: "system-ui, sans-serif", fontSize: 13.5 },
+  th: { textAlign: "left", padding: "12px 16px", background: "#EFE7D3", color: "#5C5230", fontWeight: 600, fontSize: 12.5 },
+  td: { padding: "11px 16px", borderTop: "1px solid #EFE7D3" },
+  tdMuted: { color: "#B0A582" },
+  badgeConflict: { background: "#EBBAB0", color: "#7A2418", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
+  badgeDup: { background: "#EEDCA0", color: "#6B4F0D", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
+  badgeOk: { background: "#CFDCC4", color: "#385026", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
+  manageGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 },
+  teamCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 10, padding: 16, fontFamily: "system-ui, sans-serif" },
+  teamCardHead: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 },
+  teamNameInput: { fontFamily: "Georgia, serif", fontSize: 16, border: "none", borderBottom: "1px solid transparent", padding: "2px 0", flex: 1, outline: "none", background: "transparent" },
+  linkDanger: { background: "none", border: "none", color: "#A6402F", fontSize: 12, cursor: "pointer", padding: 0, fontFamily: "system-ui, sans-serif" },
+  flexToggle: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#6B5E3E", marginBottom: 12 },
+  roleList: { display: "flex", flexDirection: "column", gap: 6 },
+  roleEditRow: { display: "flex", alignItems: "center", gap: 6 },
+  roleEditInput: { flex: 1, padding: "7px 10px", borderRadius: 6, border: "1px solid #D8CFB0", fontSize: 13.5, fontFamily: "system-ui, sans-serif", outline: "none" },
+  iconDanger: { background: "#F3E4DF", color: "#A6402F", border: "none", borderRadius: 6, width: 26, height: 26, cursor: "pointer", fontSize: 16, lineHeight: 1 },
+  addRoleRow: { display: "flex", gap: 6, marginTop: 4 },
+  smallBtn: { padding: "7px 12px", borderRadius: 6, border: "none", background: "#2F4858", color: "#EFE7D3", cursor: "pointer", fontSize: 13, fontFamily: "system-ui, sans-serif", whiteSpace: "nowrap" },
+  newTeamCard: { border: "1.5px dashed #CBBF97", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 8, justifyContent: "center" },
+  newTeamLabel: { fontFamily: "system-ui, sans-serif", fontSize: 13, color: "#7A6E4E", fontWeight: 600 },
+  pairNote: { fontFamily: "system-ui, sans-serif", fontSize: 12.5, color: "#7A6E4E", marginBottom: 10, maxWidth: 560 },
+  pairGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 },
+  pairItem: { display: "flex", alignItems: "center", gap: 8, fontFamily: "system-ui, sans-serif", fontSize: 13, background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 8, padding: "8px 10px" },
+  weekLabelGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 },
+  weekLabelItem: { display: "flex", flexDirection: "column", gap: 4, fontFamily: "system-ui, sans-serif", fontSize: 12.5, color: "#7A6E4E" },
+  weekLabelInput: { padding: "7px 10px", borderRadius: 6, border: "1px solid #D8CFB0", fontSize: 13, fontFamily: "system-ui, sans-serif", outline: "none" },
+  restrictAddRow: { display: "flex", gap: 8, flexWrap: "wrap", maxWidth: 640 },
+  restrictSelect: { padding: "8px 10px", borderRadius: 6, border: "1px solid #D8CFB0", fontSize: 13.5, fontFamily: "system-ui, sans-serif", background: "#FFFFFF", color: "#2A2620" },
+  restrictList: { marginTop: 14, display: "flex", flexDirection: "column", gap: 6, maxWidth: 640 },
+  restrictRow: { display: "flex", alignItems: "center", gap: 12, background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 8, padding: "9px 12px", fontFamily: "system-ui, sans-serif", fontSize: 13 },
+  restrictName: { fontWeight: 600, minWidth: 120 },
+  restrictTeam: { flex: 1, color: "#7A6E4E" },
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
