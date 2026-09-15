@@ -230,12 +230,16 @@ function App() {
   const configSaveTimer = useRef(null);
   const migratedRef = useRef(false);
 
-  useEffect(() => {
+useEffect(() => {
     if (!FIREBASE_CONFIGURED) return;
     const listener = configRef.on("value", (snapshot) => {
       const val = snapshot.val();
       if (val) {
-        setConfig({ ...emptyConfig(), ...val });
+        const safeTeams = (val.teams || DEFAULT_TEAMS).map((t) => ({
+          ...t,
+          roles: t.roles || [],
+        }));
+        setConfig({ ...emptyConfig(), ...val, teams: safeTeams });
         return;
       }
       if (migratedRef.current) return;
