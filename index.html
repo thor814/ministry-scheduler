@@ -104,7 +104,7 @@ const DEFAULT_TEAMS = [
       { id: "parking", name: "Parking" },
       { id: "greeting", name: "Greeting" },
   ]},
-  { id: "prayer", name: "Prayer Team", flexible: true, roles: [
+  { id: "prayer", name: "TEAM JESUS PRAYER", flexible: true, roles: [
       { id: "prayer", name: "Team JESUS Prayer" },
   ]},
 ];
@@ -1432,7 +1432,7 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
             </div>
             <label style={styles.flexToggle}>
               <input type="checkbox" checked={!!team.flexible} onChange={() => toggleFlexible(team.id)} />
-              Compatible with every other team (like a prayer team)
+              Compatible with every other team (like a TEAM JESUS PRAYER team)
             </label>
             <div style={styles.roleList}>
               {team.roles.map((role) => (
