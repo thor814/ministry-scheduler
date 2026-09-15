@@ -3,35 +3,27 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Ministry Scheduler</title>
-<meta name="theme-color" content="#23211D" />
 <meta name="description" content="Assign volunteers and catch double-bookings across ministry teams." />
+<meta name="theme-color" content="#23211D" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Scheduler" />
 <link rel="manifest" href="./manifest.json" />
 <link rel="icon" href="./icons/victory.png" />
 <link rel="apple-touch-icon" href="./icons/victory.png" />
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Scheduler" />
+<title>Ministry Scheduler</title>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-
-<style>
-  html, body, #root { margin: 0; padding: 0; height: 100%; }
-  * { box-sizing: border-box; }
-  body { background: #F6F1E4; }
-  input:focus { border-color: #A9782F !important; }
-  button { transition: opacity 0.15s ease; cursor: pointer; }
-  button:hover { opacity: 0.85; }
-</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
-<body>
+<body style="margin:0;">
 <div id="root"></div>
 
-<script type="text/babel" data-presets="react">
+<script type="text/babel">
 const { useState, useEffect, useCallback, useRef } = React;
 
 // ============================================================
@@ -40,9 +32,6 @@ const { useState, useEffect, useCallback, useRef } = React;
 // ============================================================
 
 // ---- 1) PASTE YOUR FIREBASE CONFIG HERE ----
-// Get this from: Firebase Console > Project settings > General >
-// "Your apps" > Web app > SDK setup and configuration > Config.
-// See README.txt for the full walkthrough.
 const firebaseConfig = {
   apiKey: "AIzaSyDXePNefGXSH9OyvdnV1j0A1-13IM4QDQQ",
   authDomain: "ministry-scheduler-7b834.firebaseapp.com",
@@ -57,15 +46,26 @@ const FIREBASE_CONFIGURED = !Object.values(firebaseConfig).some(
   (v) => typeof v === "string" && v.startsWith("PASTE_YOUR")
 );
 
-let stateRef = null;
+let configRef = null;
 if (FIREBASE_CONFIGURED) {
   firebase.initializeApp(firebaseConfig);
-  stateRef = firebase.database().ref("ministry-scheduler-state");
+  configRef = firebase.database().ref("ministry-scheduler-config");
 }
 
 const STORAGE_KEY = "ministry-scheduler-state-v1";
 const SLOTS = ["9:00 AM", "11:00 AM"];
 const WEEKS = [1, 2, 3, 4, 5];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+function periodKey(year, month) {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+function monthLabel(year, month) {
+  return `${MONTH_NAMES[month - 1]} ${year}`;
+}
+function monthRef(year, month) {
+  return firebase.database().ref(`ministry-scheduler-months/${periodKey(year, month)}`);
+}
 
 const DEFAULT_TEAMS = [
   { id: "admin", name: "Service Lead", flexible: false, roles: [
@@ -105,6 +105,7 @@ const norm = (s) => (s || "").toString().trim();
 const normKey = (s) => norm(s).toLowerCase();
 const pairKey = (a, b) => [a, b].sort().join("~");
 const assignKey = (week, slot, teamId, roleId) => `${week}|${slot}|${teamId}|${roleId}`;
+const roleTag = (teamId, roleId) => `${teamId}::${roleId}`;
 
 // ---- Who's logged in ----
 const CLIENT_ID_KEY = "ministry-scheduler-client-id";
@@ -123,8 +124,11 @@ function getStoredName() {
   return norm(localStorage.getItem(USER_NAME_KEY) || "");
 }
 
-function emptyState() {
-  return { teams: DEFAULT_TEAMS, assignments: {}, compatiblePairs: [], weekLabels: {}, restrictions: {} };
+function emptyConfig() {
+  return { teams: DEFAULT_TEAMS, compatiblePairs: [], compatibleGroups: [], restrictions: {} };
+}
+function emptyMonthState() {
+  return { assignments: {}, weekLabels: {} };
 }
 
 function isCompatible(teamAId, teamBId, teams, compatiblePairs) {
@@ -135,22 +139,28 @@ function isCompatible(teamAId, teamBId, teams, compatiblePairs) {
   return compatiblePairs.includes(pairKey(teamAId, teamBId));
 }
 
-function findIssues(state, week, slot, teamId, roleId, name) {
+function findIssues(config, monthState, week, slot, teamId, roleId, name) {
   const target = normKey(name);
   if (!target) return [];
   const issues = [];
   const selfKey = assignKey(week, slot, teamId, roleId);
-  for (const [key, val] of Object.entries(state.assignments)) {
+  const selfTag = roleTag(teamId, roleId);
+  for (const [key, val] of Object.entries(monthState.assignments)) {
     if (key === selfKey) continue;
     if (normKey(val) !== target) continue;
     const [w, s, tId, rId] = key.split("|");
     if (Number(w) !== week || s !== slot) continue;
-    const otherTeam = state.teams.find((t) => t.id === tId);
+    const otherTeam = config.teams.find((t) => t.id === tId);
     const otherRole = otherTeam && otherTeam.roles.find((r) => r.id === rId);
     if (!otherTeam || !otherRole) continue;
+
+    const otherTag = roleTag(tId, rId);
+    const explicitlyAllowed = (config.compatibleGroups || []).some((g) => g.includes(selfTag) && g.includes(otherTag));
+    if (explicitlyAllowed) continue;
+
     if (tId === teamId) {
       issues.push({ type: "duplicate", team: otherTeam, role: otherRole });
-    } else if (!isCompatible(teamId, tId, state.teams, state.compatiblePairs)) {
+    } else if (!isCompatible(teamId, tId, config.teams, config.compatiblePairs)) {
       issues.push({ type: "conflict", team: otherTeam, role: otherRole });
     }
   }
@@ -205,7 +215,11 @@ function NameGate({ onSubmit }) {
 }
 
 function App() {
-  const [state, setState] = useState(null);
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [config, setConfig] = useState(null);
+  const [monthState, setMonthState] = useState(null);
   const [week, setWeek] = useState(1);
   const [slot, setSlot] = useState(SLOTS[0]);
   const [activeTeamId, setActiveTeamId] = useState(DEFAULT_TEAMS[0].id);
@@ -213,25 +227,50 @@ function App() {
   const [userName, setUserName] = useState(getStoredName());
   const [onlineUsers, setOnlineUsers] = useState([]);
   const saveTimer = useRef(null);
-  const seededRef = useRef(false);
+  const configSaveTimer = useRef(null);
+  const migratedRef = useRef(false);
 
   useEffect(() => {
     if (!FIREBASE_CONFIGURED) return;
-    const listener = stateRef.on("value", (snapshot) => {
+    const listener = configRef.on("value", (snapshot) => {
       const val = snapshot.val();
       if (val) {
-        setState({ ...emptyState(), ...val });
-      } else if (!seededRef.current) {
-        seededRef.current = true;
-        const def = emptyState();
-        stateRef.set(def);
-        setState(def);
+        setConfig({ ...emptyConfig(), ...val });
+        return;
       }
+      if (migratedRef.current) return;
+      migratedRef.current = true;
+      firebase.database().ref("ministry-scheduler-state").once("value").then((oldSnap) => {
+        const old = oldSnap.val();
+        if (old && (old.teams || old.assignments)) {
+          const conf = { teams: old.teams || DEFAULT_TEAMS, compatiblePairs: old.compatiblePairs || [], compatibleGroups: old.compatibleGroups || [], restrictions: old.restrictions || {} };
+          configRef.set(conf);
+          setConfig(conf);
+          const curKey = periodKey(now.getFullYear(), now.getMonth() + 1);
+          firebase.database().ref(`ministry-scheduler-months/${curKey}`).set({
+            assignments: old.assignments || {},
+            weekLabels: old.weekLabels || {},
+          });
+        } else {
+          const conf = emptyConfig();
+          configRef.set(conf);
+          setConfig(conf);
+        }
+      });
     });
-    return () => stateRef.off("value", listener);
+    return () => configRef.off("value", listener);
   }, []);
 
-  // ---- presence: mark this device online while the app is open ----
+  useEffect(() => {
+    if (!FIREBASE_CONFIGURED) return;
+    setMonthState(null);
+    const ref = monthRef(year, month);
+    const listener = ref.on("value", (snapshot) => {
+      setMonthState({ ...emptyMonthState(), ...(snapshot.val() || {}) });
+    });
+    return () => ref.off("value", listener);
+  }, [year, month]);
+
   useEffect(() => {
     if (!FIREBASE_CONFIGURED || !userName) return;
     const clientId = getClientId();
@@ -255,20 +294,40 @@ function App() {
     };
   }, [userName]);
 
-  const updateState = useCallback((updater) => {
-    setState((prev) => {
+  const updateConfig = useCallback((updater) => {
+    setConfig((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        if (stateRef) stateRef.set(next);
+      clearTimeout(configSaveTimer.current);
+      configSaveTimer.current = setTimeout(() => {
+        if (configRef) configRef.set(next);
       }, 300);
       return next;
     });
   }, []);
 
-  const restrictedTeamId = state ? (state.restrictions || {})[normKey(userName)] : undefined;
+  const updateMonthState = useCallback((updater) => {
+    setMonthState((prev) => {
+      const base = prev || emptyMonthState();
+      const next = typeof updater === "function" ? updater(base) : updater;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        monthRef(year, month).set(next);
+      }, 300);
+      return next;
+    });
+  }, [year, month]);
 
-  // ---- if this name is restricted to one ministry, keep them locked to it ----
+  const shiftMonth = (delta) => {
+    let m = month + delta;
+    let y = year;
+    while (m > 12) { m -= 12; y += 1; }
+    while (m < 1) { m += 12; y -= 1; }
+    setMonth(m);
+    setYear(y);
+  };
+
+  const restrictedTeamId = config ? (config.restrictions || {})[normKey(userName)] : undefined;
+
   useEffect(() => {
     if (!restrictedTeamId) return;
     if (activeTeamId !== restrictedTeamId) setActiveTeamId(restrictedTeamId);
@@ -277,7 +336,7 @@ function App() {
 
   if (!FIREBASE_CONFIGURED) return <SetupScreen />;
   if (!userName) return <NameGate onSubmit={setUserName} />;
-  if (!state) {
+  if (!config || !monthState) {
     return (
       <div style={styles.setupScreen}>
         <div style={styles.setupText}>Connecting…</div>
@@ -286,29 +345,34 @@ function App() {
   }
 
   const activeTeam = restrictedTeamId
-    ? state.teams.find((t) => t.id === restrictedTeamId) || state.teams[0]
-    : state.teams.find((t) => t.id === activeTeamId) || state.teams[0];
+    ? config.teams.find((t) => t.id === restrictedTeamId) || config.teams[0]
+    : config.teams.find((t) => t.id === activeTeamId) || config.teams[0];
   const effectiveTab = restrictedTeamId && tab === "manage" ? "assign" : tab;
 
   return (
     <div style={styles.app}>
-      <Sidebar state={state} week={week} setWeek={setWeek} slot={slot} setSlot={setSlot}
+      <Sidebar config={config} monthState={monthState} week={week} setWeek={setWeek} slot={slot} setSlot={setSlot}
         tab={effectiveTab} setTab={setTab} activeTeamId={activeTeam && activeTeam.id}
         setActiveTeamId={setActiveTeamId} userName={userName} onlineUsers={onlineUsers}
-        restrictedTeamId={restrictedTeamId} />
+        restrictedTeamId={restrictedTeamId} monthLabelText={monthLabel(year, month)}
+        onPrevMonth={() => shiftMonth(-1)} onNextMonth={() => shiftMonth(1)} />
       <main style={styles.main}>
         {effectiveTab === "assign" && (
-          <AssignView state={state} updateState={updateState} week={week} slot={slot} team={activeTeam}
+          <AssignView config={config} monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot} team={activeTeam}
             locked={!!restrictedTeamId && activeTeam && activeTeam.id !== restrictedTeamId} />
         )}
-        {effectiveTab === "master" && <MasterListView state={state} week={week} slot={slot} />}
-        {effectiveTab === "manage" && !restrictedTeamId && <ManageView state={state} updateState={updateState} />}
+        {effectiveTab === "master" && <MasterListView config={config} monthState={monthState} week={week} slot={slot} />}
+        {effectiveTab === "manage" && !restrictedTeamId && (
+          <ManageView config={config} updateConfig={updateConfig} monthState={monthState} updateMonthState={updateMonthState}
+            monthLabelText={monthLabel(year, month)} />
+        )}
       </main>
+
     </div>
   );
 }
 
-function Sidebar({ state, week, setWeek, slot, setSlot, tab, setTab, activeTeamId, setActiveTeamId, userName, onlineUsers, restrictedTeamId }) {
+function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab, activeTeamId, setActiveTeamId, userName, onlineUsers, restrictedTeamId, monthLabelText, onPrevMonth, onNextMonth }) {
   const others = (onlineUsers || []).filter((u) => norm(u.name).toLowerCase() !== norm(userName).toLowerCase());
   const switchUser = () => {
     localStorage.removeItem(USER_NAME_KEY);
@@ -318,7 +382,7 @@ function Sidebar({ state, week, setWeek, slot, setSlot, tab, setTab, activeTeamI
     <aside style={styles.sidebar}>
       <div>
         <div style={styles.brand}>
-          <div style={styles.brandMark}>M</div>
+          <img src="./icons/victory.png" alt="" style={styles.brandMark} />
           <div>
             <div style={styles.brandTitle}>Ministry Scheduler</div>
             <div style={styles.brandSub}>Synced live with everyone</div>
@@ -342,6 +406,13 @@ function Sidebar({ state, week, setWeek, slot, setSlot, tab, setTab, activeTeamI
           </div>
         )}
 
+        <div style={styles.sectionLabel}>Month</div>
+        <div style={styles.monthNavRow}>
+          <button onClick={onPrevMonth} style={styles.monthNavBtn} aria-label="Previous month">‹</button>
+          <div style={styles.monthNavLabel}>{monthLabelText}</div>
+          <button onClick={onNextMonth} style={styles.monthNavBtn} aria-label="Next month">›</button>
+        </div>
+
         <div style={styles.sectionLabel}>Service</div>
         <div style={styles.weekRow}>
           {WEEKS.map((w) => (
@@ -351,7 +422,7 @@ function Sidebar({ state, week, setWeek, slot, setSlot, tab, setTab, activeTeamI
             </button>
           ))}
         </div>
-        {state.weekLabels[week] ? <div style={styles.weekDateLabel}>{state.weekLabels[week]}</div> : null}
+        {monthState.weekLabels[week] ? <div style={styles.weekDateLabel}>{monthState.weekLabels[week]}</div> : null}
 
         <div style={styles.slotRow}>
           {SLOTS.map((s) => (
@@ -375,7 +446,7 @@ function Sidebar({ state, week, setWeek, slot, setSlot, tab, setTab, activeTeamI
           <React.Fragment>
             <div style={styles.sectionLabel}>Team</div>
             <nav style={styles.navList}>
-              {state.teams.map((t) => {
+              {config.teams.map((t) => {
                 const isLocked = !!restrictedTeamId && t.id !== restrictedTeamId;
                 return (
                   <NavItem key={t.id} label={isLocked ? `🔒 ${t.name}` : t.name} active={t.id === activeTeamId}
@@ -408,11 +479,11 @@ function NavItem({ label, active, onClick, dim, disabled }) {
   );
 }
 
-function AssignView({ state, updateState, week, slot, team, locked }) {
+function AssignView({ config, monthState, updateMonthState, week, slot, team, locked }) {
   if (!team) return null;
   const setName = (roleId, value) => {
     if (locked) return;
-    updateState((prev) => {
+    updateMonthState((prev) => {
       const key = assignKey(week, slot, team.id, roleId);
       const nextAssignments = { ...prev.assignments };
       if (norm(value)) nextAssignments[key] = value;
@@ -434,8 +505,8 @@ function AssignView({ state, updateState, week, slot, team, locked }) {
         {team.roles.length === 0 && <div style={styles.emptyNote}>This team has no roles yet. Add some under Manage teams.</div>}
         {team.roles.map((role, i) => {
           const key = assignKey(week, slot, team.id, role.id);
-          const value = state.assignments[key] || "";
-          const issues = findIssues(state, week, slot, team.id, role.id, value);
+          const value = monthState.assignments[key] || "";
+          const issues = findIssues(config, monthState, week, slot, team.id, role.id, value);
           const hasConflict = issues.some((x) => x.type === "conflict");
           const hasDup = issues.some((x) => x.type === "duplicate");
           return (
@@ -463,13 +534,13 @@ function AssignView({ state, updateState, week, slot, team, locked }) {
   );
 }
 
-function MasterListView({ state, week, slot }) {
+function MasterListView({ config, monthState, week, slot }) {
   const rows = [];
-  state.teams.forEach((team) => {
+  config.teams.forEach((team) => {
     team.roles.forEach((role) => {
       const key = assignKey(week, slot, team.id, role.id);
-      const name = state.assignments[key] || "";
-      const issues = name ? findIssues(state, week, slot, team.id, role.id, name) : [];
+      const name = monthState.assignments[key] || "";
+      const issues = name ? findIssues(config, monthState, week, slot, team.id, role.id, name) : [];
       rows.push({ team, role, name, issues });
     });
   });
@@ -515,75 +586,86 @@ function MasterListView({ state, week, slot }) {
   );
 }
 
-function ManageView({ state, updateState }) {
+function ManageView({ config, updateConfig, monthState, updateMonthState, monthLabelText }) {
   const [newTeamName, setNewTeamName] = useState("");
   const [newRoleName, setNewRoleName] = useState({});
   const [restrictName, setRestrictName] = useState("");
   const [restrictTeamId, setRestrictTeamId] = useState("");
+  const [groupSelection, setGroupSelection] = useState([]);
+
+  const allRoleOptions = config.teams.flatMap((t) =>
+    t.roles.map((r) => ({ tag: roleTag(t.id, r.id), label: `${t.name} — ${r.name}` }))
+  );
+  const toggleGroupRole = (tag) => {
+    setGroupSelection((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
+  };
+  const addGroup = () => {
+    if (groupSelection.length < 2) return;
+    updateConfig((prev) => ({ ...prev, compatibleGroups: [...(prev.compatibleGroups || []), groupSelection] }));
+    setGroupSelection([]);
+  };
+  const removeGroup = (idx) => {
+    updateConfig((prev) => ({ ...prev, compatibleGroups: (prev.compatibleGroups || []).filter((_, i) => i !== idx) }));
+  };
 
   const addTeam = () => {
     const name = norm(newTeamName);
     if (!name) return;
-    updateState((prev) => ({ ...prev, teams: [...prev.teams, { id: uid(), name, flexible: false, roles: [] }] }));
+    updateConfig((prev) => ({ ...prev, teams: [...prev.teams, { id: uid(), name, flexible: false, roles: [] }] }));
     setNewTeamName("");
   };
   const removeTeam = (teamId) => {
-    updateState((prev) => ({
+    updateConfig((prev) => ({
       ...prev,
       teams: prev.teams.filter((t) => t.id !== teamId),
       compatiblePairs: prev.compatiblePairs.filter((p) => !p.split("~").includes(teamId)),
-      assignments: Object.fromEntries(Object.entries(prev.assignments).filter(([key]) => key.split("|")[2] !== teamId)),
     }));
   };
   const renameTeam = (teamId, name) => {
-    updateState((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, name } : t)) }));
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, name } : t)) }));
   };
   const toggleFlexible = (teamId) => {
-    updateState((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, flexible: !t.flexible } : t)) }));
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, flexible: !t.flexible } : t)) }));
   };
   const addRole = (teamId) => {
     const name = norm(newRoleName[teamId]);
     if (!name) return;
-    updateState((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: [...t.roles, { id: uid(), name }] } : t)) }));
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: [...t.roles, { id: uid(), name }] } : t)) }));
     setNewRoleName((prev) => ({ ...prev, [teamId]: "" }));
   };
   const removeRole = (teamId, roleId) => {
-    updateState((prev) => ({
+    updateConfig((prev) => ({
       ...prev,
       teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.filter((r) => r.id !== roleId) } : t)),
-      assignments: Object.fromEntries(Object.entries(prev.assignments).filter(([key]) => {
-        const parts = key.split("|");
-        return !(parts[2] === teamId && parts[3] === roleId);
-      })),
     }));
   };
   const renameRole = (teamId, roleId, name) => {
-    updateState((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.map((r) => (r.id === roleId ? { ...r, name } : r)) } : t)) }));
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.map((r) => (r.id === roleId ? { ...r, name } : r)) } : t)) }));
   };
   const togglePair = (aId, bId) => {
     const key = pairKey(aId, bId);
-    updateState((prev) => ({ ...prev, compatiblePairs: prev.compatiblePairs.includes(key) ? prev.compatiblePairs.filter((p) => p !== key) : [...prev.compatiblePairs, key] }));
+    updateConfig((prev) => ({ ...prev, compatiblePairs: prev.compatiblePairs.includes(key) ? prev.compatiblePairs.filter((p) => p !== key) : [...prev.compatiblePairs, key] }));
   };
   const setWeekLabel = (week, label) => {
-    updateState((prev) => ({ ...prev, weekLabels: { ...prev.weekLabels, [week]: label } }));
+    updateMonthState((prev) => ({ ...prev, weekLabels: { ...prev.weekLabels, [week]: label } }));
   };
   const addRestriction = () => {
     const name = normKey(restrictName);
     if (!name || !restrictTeamId) return;
-    updateState((prev) => ({ ...prev, restrictions: { ...(prev.restrictions || {}), [name]: restrictTeamId } }));
+    updateConfig((prev) => ({ ...prev, restrictions: { ...(prev.restrictions || {}), [name]: restrictTeamId } }));
     setRestrictName("");
     setRestrictTeamId("");
   };
   const removeRestriction = (name) => {
-    updateState((prev) => {
+    updateConfig((prev) => {
       const next = { ...(prev.restrictions || {}) };
       delete next[name];
       return { ...prev, restrictions: next };
     });
   };
 
-  const rigidTeams = state.teams.filter((t) => !t.flexible);
-  const restrictionEntries = Object.entries(state.restrictions || {});
+  const rigidTeams = config.teams.filter((t) => !t.flexible);
+  const restrictionEntries = Object.entries(config.restrictions || {});
 
   return (
     <div style={styles.viewWrap}>
@@ -592,7 +674,7 @@ function ManageView({ state, updateState }) {
         <div style={styles.viewMeta}>Edit teams and roles, and decide which teams may share a volunteer at the same service.</div>
       </header>
       <div style={styles.manageGrid}>
-        {state.teams.map((team) => (
+        {config.teams.map((team) => (
           <div key={team.id} style={styles.teamCard}>
             <div style={styles.teamCardHead}>
               <input value={team.name} onChange={(e) => renameTeam(team.id, e.target.value)} style={styles.teamNameInput} />
@@ -628,12 +710,12 @@ function ManageView({ state, updateState }) {
 
       {rigidTeams.length > 1 && (
         <div style={{ marginTop: 28 }}>
-          <div style={styles.sectionLabel}>Allowed double-bookings</div>
+          <div style={styles.sectionLabel}>Allowed double-bookings (whole teams)</div>
           <div style={styles.pairNote}>Check a pair if the same person is allowed to serve on both teams at the same service without being flagged.</div>
           <div style={styles.pairGrid}>
             {rigidTeams.map((a, i) => rigidTeams.slice(i + 1).map((b) => (
               <label key={a.id + b.id} style={styles.pairItem}>
-                <input type="checkbox" checked={state.compatiblePairs.includes(pairKey(a.id, b.id))} onChange={() => togglePair(a.id, b.id)} />
+                <input type="checkbox" checked={config.compatiblePairs.includes(pairKey(a.id, b.id))} onChange={() => togglePair(a.id, b.id)} />
                 {a.name} + {b.name}
               </label>
             )))}
@@ -642,12 +724,45 @@ function ManageView({ state, updateState }) {
       )}
 
       <div style={{ marginTop: 28 }}>
-        <div style={styles.sectionLabel}>Week dates</div>
+        <div style={styles.sectionLabel}>Allowed role combinations</div>
+        <div style={styles.pairNote}>
+          I-check ang lahat ng roles (2 hanggang ilan man) na pwedeng hawakan
+          ng iisang tao nang sabay, nang hindi na-flag — kahit same team o
+          cross-team pa ito.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 6, marginBottom: 10, maxWidth: 900 }}>
+          {allRoleOptions.map((r) => (
+            <label key={r.tag} style={styles.pairItem}>
+              <input type="checkbox" checked={groupSelection.includes(r.tag)} onChange={() => toggleGroupRole(r.tag)} />
+              {r.label}
+            </label>
+          ))}
+        </div>
+        <button onClick={addGroup} style={styles.smallBtn} disabled={groupSelection.length < 2}>
+          Add group ({groupSelection.length} napili)
+        </button>
+        {(config.compatibleGroups || []).length > 0 && (
+          <div style={styles.restrictList}>
+            {(config.compatibleGroups || []).map((group, idx) => (
+              <div key={idx} style={styles.restrictRow}>
+                <span style={styles.restrictTeam}>
+                  {group.map((tag) => (allRoleOptions.find((r) => r.tag === tag) || {}).label || tag).join(" + ")}
+                </span>
+                <button onClick={() => removeGroup(idx)} style={styles.linkDanger}>Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Week dates — {monthLabelText}</div>
+        <div style={styles.pairNote}>These week 1–5 dates are specific to the month shown above. Switch months in the sidebar to set dates for a different month.</div>
         <div style={styles.weekLabelGrid}>
           {WEEKS.map((w) => (
             <label key={w} style={styles.weekLabelItem}>
               <span>Week {w}</span>
-              <input value={state.weekLabels[w] || ""} onChange={(e) => setWeekLabel(w, e.target.value)} placeholder="e.g. July 6, 2026" style={styles.weekLabelInput} />
+              <input value={monthState.weekLabels[w] || ""} onChange={(e) => setWeekLabel(w, e.target.value)} placeholder="e.g. July 6, 2026" style={styles.weekLabelInput} />
             </label>
           ))}
         </div>
@@ -658,7 +773,7 @@ function ManageView({ state, updateState }) {
         <div style={styles.pairNote}>
           Type the exact name a person enters on the "Who's this?" screen and pick the one
           ministry they're allowed to edit. Anyone not listed here can edit everything, as
-          usual.
+          usual. This applies across every month.
         </div>
         <div style={styles.restrictAddRow}>
           <input value={restrictName} onChange={(e) => setRestrictName(e.target.value)}
@@ -666,7 +781,7 @@ function ManageView({ state, updateState }) {
             onKeyDown={(e) => { if (e.key === "Enter") addRestriction(); }} />
           <select value={restrictTeamId} onChange={(e) => setRestrictTeamId(e.target.value)} style={styles.restrictSelect}>
             <option value="">Choose ministry…</option>
-            {state.teams.map((t) => (
+            {config.teams.map((t) => (
               <option key={t.id} value={t.id}>{t.name}</option>
             ))}
           </select>
@@ -675,7 +790,7 @@ function ManageView({ state, updateState }) {
         {restrictionEntries.length > 0 && (
           <div style={styles.restrictList}>
             {restrictionEntries.map(([name, teamId]) => {
-              const team = state.teams.find((t) => t.id === teamId);
+              const team = config.teams.find((t) => t.id === teamId);
               return (
                 <div key={name} style={styles.restrictRow}>
                   <span style={styles.restrictName}>{name}</span>
@@ -699,7 +814,7 @@ const styles = {
   code: { background: "#EFE7D3", padding: "1px 6px", borderRadius: 4, fontSize: 13 },
   sidebar: { width: 260, flexShrink: 0, background: "#23211D", color: "#EFE7D3", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "24px 18px", boxSizing: "border-box" },
   brand: { display: "flex", alignItems: "center", gap: 10, marginBottom: 26 },
-  brandMark: { width: 34, height: 34, borderRadius: 6, background: "#A9782F", color: "#23211D", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontFamily: "Georgia, serif", fontSize: 18, flexShrink: 0 },
+  brandMark: { width: 34, height: 34, borderRadius: 6, objectFit: "cover", flexShrink: 0 },
   brandTitle: { fontFamily: "Georgia, serif", fontSize: 16.5, lineHeight: 1.2 },
   brandSub: { fontSize: 11.5, color: "#B8AD8C", marginTop: 2, fontFamily: "system-ui, sans-serif" },
   sectionLabel: { fontSize: 11, letterSpacing: 0.3, color: "#9B8F6C", margin: "20px 0 8px", fontFamily: "system-ui, sans-serif" },
@@ -710,6 +825,9 @@ const styles = {
   switchUserLink: { background: "none", border: "none", color: "#9B8F6C", fontSize: 11, cursor: "pointer", padding: "4px 0 0", fontFamily: "system-ui, sans-serif", textAlign: "left" },
   restrictedNote: { fontSize: 11.5, color: "#9B8F6C", fontFamily: "system-ui, sans-serif", marginTop: 8, lineHeight: 1.5 },
   weekRow: { display: "flex", gap: 6 },
+  monthNavRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, background: "#2B2820", border: "1px solid #3B3830", borderRadius: 6, padding: "6px 8px" },
+  monthNavBtn: { background: "transparent", border: "none", color: "#D9CFAF", fontSize: 17, cursor: "pointer", padding: "0 6px", lineHeight: 1 },
+  monthNavLabel: { fontFamily: "system-ui, sans-serif", fontSize: 13, color: "#EFE7D3", fontWeight: 600, textAlign: "center", flex: 1 },
   weekBtn: { flex: 1, padding: "8px 0", borderRadius: 6, border: "1px solid #3B3830", background: "transparent", color: "#D9CFAF", cursor: "pointer", fontFamily: "system-ui, sans-serif", fontSize: 13 },
   weekBtnActive: { background: "#A9782F", borderColor: "#A9782F", color: "#23211D", fontWeight: 700 },
   weekDateLabel: { fontSize: 12, color: "#B8AD8C", marginTop: 8, fontFamily: "system-ui, sans-serif" },
@@ -773,14 +891,6 @@ const styles = {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);
-</script>
-
-<script>
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
-    });
-  }
 </script>
 </body>
 </html>
