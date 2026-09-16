@@ -682,7 +682,7 @@ function App() {
             onlineUsers={onlineUsers} userName={userName} />
         )}
         {effectiveTab === "assign" && (
-          <AssignView config={config} monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot} team={activeTeam}
+          <AssignView config={config} updateConfig={updateConfig} monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot} team={activeTeam}
             year={year} month={month} locked={!activeTeam || !allowedTeamIds.includes(activeTeam.id)} isMobile={isMobile} />
         )}
         {effectiveTab === "info" && (
@@ -901,7 +901,7 @@ function CompactNavItem({ icon, label, active, onClick, dim, locked, small }) {
   );
 }
 
-function AssignView({ config, monthState, updateMonthState, week, slot, team, year, month, locked, isMobile }) {
+function AssignView({ config, updateConfig, monthState, updateMonthState, week, slot, team, year, month, locked, isMobile }) {
   if (!team) return null;
   const setName = (roleId, value) => {
     if (locked) return;
@@ -923,6 +923,24 @@ function AssignView({ config, monthState, updateMonthState, week, slot, team, ye
       return { ...prev, verses: nextVerses };
     });
   };
+  // Remembers a newly-typed volunteer name against this team's list so it
+  // shows up in the dropdown next time (per-team, case-insensitive dedupe).
+  const rememberVolunteer = (name) => {
+    if (locked) return;
+    const clean = norm(name);
+    if (!clean) return;
+    updateConfig((prev) => {
+      const teams = prev.teams.map((t) => {
+        if (t.id !== team.id) return t;
+        const existing = t.volunteers || [];
+        if (existing.some((v) => normKey(v) === normKey(clean))) return t;
+        return { ...t, volunteers: [...existing, clean] };
+      });
+      return { ...prev, teams };
+    });
+  };
+  const volunteerListId = `volunteers-${team.id}`;
+  const teamVolunteers = (team.volunteers || []).slice().sort((a, b) => a.localeCompare(b));
   return (
     <div style={styles.viewWrap}>
       <header style={styles.viewHeader}>
@@ -933,6 +951,9 @@ function AssignView({ config, monthState, updateMonthState, week, slot, team, ye
           {locked && <span style={styles.flexTag}>view only — you can only edit your ministry</span>}
         </div>
       </header>
+      <datalist id={volunteerListId}>
+        {teamVolunteers.map((v) => <option key={v} value={v} />)}
+      </datalist>
       <div style={styles.rolesCard}>
         {team.roles.length === 0 && <div style={styles.emptyNote}>This team has no roles yet. Add some under Manage teams.</div>}
         {team.roles.map((role, i) => {
@@ -948,7 +969,8 @@ function AssignView({ config, monthState, updateMonthState, week, slot, team, ye
               <div style={{ ...styles.roleInputWrap, ...(isMobile ? { width: "100%" } : {}) }}>
                 <div style={{ display: "flex", gap: 10, ...(isMobile ? { flexDirection: "column" } : {}) }}>
                   <input value={value} onChange={(e) => setName(role.id, e.target.value)}
-                    placeholder="Volunteer name" readOnly={locked}
+                    onBlur={(e) => rememberVolunteer(e.target.value)}
+                    list={volunteerListId} placeholder="Volunteer name" readOnly={locked}
                     style={{ ...styles.input, flex: 1, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }} />
                   {role.hasVerse && (
                     <input value={verseValue} onChange={(e) => setVerse(role.id, e.target.value)}
@@ -1358,6 +1380,7 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
   const [role3, setRole3] = useState("");
   const [role4, setRole4] = useState("");
   const [overrideDraft, setOverrideDraft] = useState({});
+  const [newVolunteerName, setNewVolunteerName] = useState({});
 
   const printSettings = config.printSettings || {};
   const setPrintSetting = (field, value) => {
@@ -1381,7 +1404,7 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
   const addTeam = () => {
     const name = norm(newTeamName);
     if (!name) return;
-    updateConfig((prev) => ({ ...prev, teams: [...prev.teams, { id: uid(), name, flexible: false, roles: [] }] }));
+    updateConfig((prev) => ({ ...prev, teams: [...prev.teams, { id: uid(), name, flexible: false, roles: [], volunteers: [] }] }));
     setNewTeamName("");
   };
   const removeTeam = (teamId) => {
@@ -1447,6 +1470,28 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
       delete next[name];
       return { ...prev, restrictions: next };
     });
+  };
+
+  // ---- Per-team volunteer list (used for the Assign volunteers dropdown) ----
+  const addVolunteer = (teamId) => {
+    const name = norm(newVolunteerName[teamId]);
+    if (!name) return;
+    updateConfig((prev) => ({
+      ...prev,
+      teams: prev.teams.map((t) => {
+        if (t.id !== teamId) return t;
+        const existing = t.volunteers || [];
+        if (existing.some((v) => normKey(v) === normKey(name))) return t;
+        return { ...t, volunteers: [...existing, name] };
+      }),
+    }));
+    setNewVolunteerName((prev) => ({ ...prev, [teamId]: "" }));
+  };
+  const removeVolunteer = (teamId, name) => {
+    updateConfig((prev) => ({
+      ...prev,
+      teams: prev.teams.map((t) => (t.id === teamId ? { ...t, volunteers: (t.volunteers || []).filter((v) => v !== name) } : t)),
+    }));
   };
 
   const rigidTeams = config.teams.filter((t) => !t.flexible);
@@ -1618,6 +1663,31 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
                   placeholder="New role name" style={styles.roleEditInput}
                   onKeyDown={(e) => { if (e.key === "Enter") addRole(team.id); }} />
                 <button onClick={() => addRole(team.id)} style={styles.smallBtn}>Add</button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px dashed #E4DCC6" }}>
+              <div style={{ fontSize: 11.5, color: "#8A7F5E", marginBottom: 6, fontWeight: 600 }}>
+                Volunteer list for this ministry (dropdown on Assign volunteers)
+              </div>
+              {(team.volunteers || []).length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {(team.volunteers || []).slice().sort((a, b) => a.localeCompare(b)).map((name) => (
+                    <span key={name} style={{ background: "#EFE7D3", borderRadius: 20, padding: "3px 10px", fontSize: 11.5, display: "flex", alignItems: "center", gap: 6 }}>
+                      {name}
+                      <button onClick={() => removeVolunteer(team.id, name)} style={{ border: "none", background: "none", color: "#A6402F", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0 }} aria-label="Remove volunteer">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div style={styles.addRoleRow}>
+                <input value={newVolunteerName[team.id] || ""} onChange={(e) => setNewVolunteerName((prev) => ({ ...prev, [team.id]: e.target.value }))}
+                  placeholder="Add volunteer name" style={styles.roleEditInput}
+                  onKeyDown={(e) => { if (e.key === "Enter") addVolunteer(team.id); }} />
+                <button onClick={() => addVolunteer(team.id)} style={styles.smallBtn}>Add</button>
+              </div>
+              <div style={{ fontSize: 11, color: "#9B8F6C", marginTop: 6, lineHeight: 1.4 }}>
+                Names typed on Assign volunteers are added here automatically too — this is just where you can clean up typos or remove someone.
               </div>
             </div>
           </div>
