@@ -394,6 +394,20 @@ function resolveRoleTagValue(config, monthState, week, slot, tag) {
   return monthState.assignments[key] || "";
 }
 
+// Resolve the verse text entered (in Assign volunteers) for a print-program
+// row's linked role, but only when that role has been marked "Add a verse
+// box next to this role" (role.hasVerse) in Manage Teams. Used so the print
+// run sheet can show the verse as its own row under the linked task.
+function resolveRowVerse(config, monthState, week, slot, row) {
+  if (!row.linkedRole) return "";
+  const [teamId, roleId] = row.linkedRole.split("::");
+  const team = config.teams.find((t) => t.id === teamId);
+  const role = team && team.roles.find((r) => r.id === roleId);
+  if (!team || !role || !role.hasVerse) return "";
+  const key = assignKey(week, slot, teamId, roleId);
+  return (monthState.verses && monthState.verses[key]) || "";
+}
+
 function isCompatible(teamAId, teamBId, teams, compatiblePairs) {
   if (teamAId === teamBId) return true;
   const a = teams.find((t) => t.id === teamAId);
@@ -1174,31 +1188,85 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                 const extraLines = (section.programSubRoles || [])
                   .map((tag) => resolveRoleTagValue(config, monthState, week, slot, tag))
                   .filter((v) => norm(v));
+
+                // If any row in this group has a verse entered (only roles
+                // marked "Add a verse box" via Manage Teams can have one),
+                // we can't safely merge the Program column into one rowSpan
+                // cell anymore (an inserted verse row would throw off the
+                // span count). So groups with a live verse fall back to a
+                // per-row Program cell instead of one merged cell; groups
+                // with no verse this week keep the original merged look.
+                const rowVerses = visibleRows.map((row) => resolveRowVerse(config, monthState, week, slot, row));
+                const hasAnyVerse = rowVerses.some((v) => v);
+
+                if (!hasAnyVerse) {
+                  return visibleRows.map((row, i) => {
+                    const timing = resolveRowTiming(row, week, slot, timeOffset);
+                    return (
+                    <tr key={row.id}>
+                      <td style={styles.sheetTd}>{timing.time}</td>
+                      <td style={styles.sheetTd}>{timing.duration}</td>
+                      {i === 0 && (
+                        <td rowSpan={visibleRows.length} style={{ ...styles.sheetTd, fontWeight: 700, verticalAlign: "middle", whiteSpace: "pre-wrap" }}>
+                          {section.program || ""}
+                          {extraLines.length > 0 && (
+                            <div style={{ fontWeight: 400, fontSize: 10.5, marginTop: 4 }}>
+                              {extraLines.map((v, idx) => <div key={idx}>{v}</div>)}
+                            </div>
+                          )}
+                        </td>
+                      )}
+                      <td style={styles.sheetTd}>{row.task || ""}</td>
+                      <td style={styles.sheetTd}><VolunteerCell row={row} /></td>
+                      <td style={{ ...styles.sheetTd, textAlign: "center" }}>
+                        {row.checkbox && (
+                          <input className="no-print-interactive" type="checkbox" checked={!!(monthState.checks && monthState.checks[`custom:${row.id}`])}
+                            onChange={() => toggleCheck(`custom:${row.id}`)} />
+                        )}
+                      </td>
+                    </tr>
+                    );
+                  });
+                }
+
                 return visibleRows.map((row, i) => {
                   const timing = resolveRowTiming(row, week, slot, timeOffset);
-                  return (
-                  <tr key={row.id}>
-                    <td style={styles.sheetTd}>{timing.time}</td>
-                    <td style={styles.sheetTd}>{timing.duration}</td>
-                    {i === 0 && (
-                      <td rowSpan={visibleRows.length} style={{ ...styles.sheetTd, fontWeight: 700, verticalAlign: "middle", whiteSpace: "pre-wrap" }}>
-                        {section.program || ""}
-                        {extraLines.length > 0 && (
+                  const verseText = rowVerses[i];
+                  const mainTr = (
+                    <tr key={row.id}>
+                      <td style={styles.sheetTd}>{timing.time}</td>
+                      <td style={styles.sheetTd}>{timing.duration}</td>
+                      <td style={{ ...styles.sheetTd, fontWeight: 700, verticalAlign: "middle", whiteSpace: "pre-wrap" }}>
+                        {i === 0 ? (section.program || "") : ""}
+                        {i === 0 && extraLines.length > 0 && (
                           <div style={{ fontWeight: 400, fontSize: 10.5, marginTop: 4 }}>
                             {extraLines.map((v, idx) => <div key={idx}>{v}</div>)}
                           </div>
                         )}
                       </td>
-                    )}
-                    <td style={styles.sheetTd}>{row.task || ""}</td>
-                    <td style={styles.sheetTd}><VolunteerCell row={row} /></td>
-                    <td style={{ ...styles.sheetTd, textAlign: "center" }}>
-                      {row.checkbox && (
-                        <input className="no-print-interactive" type="checkbox" checked={!!(monthState.checks && monthState.checks[`custom:${row.id}`])}
-                          onChange={() => toggleCheck(`custom:${row.id}`)} />
-                      )}
-                    </td>
-                  </tr>
+                      <td style={styles.sheetTd}>{row.task || ""}</td>
+                      <td style={styles.sheetTd}><VolunteerCell row={row} /></td>
+                      <td style={{ ...styles.sheetTd, textAlign: "center" }}>
+                        {row.checkbox && (
+                          <input className="no-print-interactive" type="checkbox" checked={!!(monthState.checks && monthState.checks[`custom:${row.id}`])}
+                            onChange={() => toggleCheck(`custom:${row.id}`)} />
+                        )}
+                      </td>
+                    </tr>
+                  );
+                  if (!verseText) return mainTr;
+                  return (
+                    <React.Fragment key={row.id + "-wrap"}>
+                      {mainTr}
+                      <tr key={row.id + "-verse"}>
+                        <td style={styles.sheetTd}></td>
+                        <td style={styles.sheetTd}></td>
+                        <td style={styles.sheetTd}>{row.task || ""}</td>
+                        <td style={styles.sheetTd}>{verseText}</td>
+                        <td style={styles.sheetTd}><VolunteerCell row={row} /></td>
+                        <td style={styles.sheetTd}></td>
+                      </tr>
+                    </React.Fragment>
                   );
                 });
               })}
@@ -1715,7 +1783,9 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
           for a future 3:00 PM service. A divider (like "END OF 9:00 AM SERVICE") can be
           given the same kind of override on its own Time, so the printed end time can be
           pushed later or earlier for weeks where other rows' durations were overridden
-          and the service is expected to run long or short.
+          and the service is expected to run long or short. A role marked "Add a verse
+          box next to this role" will also print its verse as its own row right under
+          that task once someone fills it in on Assign volunteers.
         </div>
 
         {program.sections.map((section, sIdx) => {
