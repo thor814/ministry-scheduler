@@ -1169,7 +1169,7 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                     </tr>
                   );
                 }
-                const visibleRows = section.rows.filter((row) => rowVisibleForWeek(row, week));
+                const visibleRows = (section.rows || []).filter((row) => rowVisibleForWeek(row, week));
                 if (visibleRows.length === 0) return null;
                 const extraLines = (section.programSubRoles || [])
                   .map((tag) => resolveRoleTagValue(config, monthState, week, slot, tag))
@@ -1748,7 +1748,7 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
                   </span>
                   {(section.overrides || []).length > 0 && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      {section.overrides.map((ov) => (
+                      {(section.overrides || []).map((ov) => (
                         <div key={ov.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, background: "#F6F1E4", borderRadius: 6, padding: "4px 8px" }}>
                           <span style={{ flex: 1 }}>
                             {(ov.weeks && ov.weeks.length ? `Wk ${ov.weeks.join(",")}` : "All weeks")}
@@ -1854,7 +1854,7 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
                       </span>
                       {(row.overrides || []).length > 0 && (
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {row.overrides.map((ov) => (
+                          {(row.overrides || []).map((ov) => (
                             <div key={ov.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, background: "#F6F1E4", borderRadius: 6, padding: "4px 8px" }}>
                               <span style={{ flex: 1 }}>
                                 {(ov.weeks && ov.weeks.length ? `Wk ${ov.weeks.join(",")}` : "All weeks")}
