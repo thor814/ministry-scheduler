@@ -669,7 +669,7 @@ function App() {
         )}
         {effectiveTab === "assign" && (
           <AssignView config={config} monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot} team={activeTeam}
-            year={year} month={month} locked={!activeTeam || !allowedTeamIds.includes(activeTeam.id)} />
+            year={year} month={month} locked={!activeTeam || !allowedTeamIds.includes(activeTeam.id)} isMobile={isMobile} />
         )}
         {effectiveTab === "info" && (
           <ServiceInfoView monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot}
@@ -887,7 +887,7 @@ function CompactNavItem({ icon, label, active, onClick, dim, locked, small }) {
   );
 }
 
-function AssignView({ config, monthState, updateMonthState, week, slot, team, year, month, locked }) {
+function AssignView({ config, monthState, updateMonthState, week, slot, team, year, month, locked, isMobile }) {
   if (!team) return null;
   const setName = (roleId, value) => {
     if (locked) return;
@@ -929,10 +929,10 @@ function AssignView({ config, monthState, updateMonthState, week, slot, team, ye
           const hasConflict = issues.some((x) => x.type === "conflict");
           const hasDup = issues.some((x) => x.type === "duplicate");
           return (
-            <div key={role.id} style={{ ...styles.roleRow, borderTop: i === 0 ? "none" : "1px solid #E4DCC6" }}>
-              <div style={styles.roleName}>{role.name}</div>
-              <div style={styles.roleInputWrap}>
-                <div style={{ display: "flex", gap: 10 }}>
+            <div key={role.id} style={{ ...styles.roleRow, borderTop: i === 0 ? "none" : "1px solid #E4DCC6", ...(isMobile ? { flexDirection: "column", gap: 8 } : {}) }}>
+              <div style={{ ...styles.roleName, ...(isMobile ? { width: "100%", paddingTop: 0 } : {}) }}>{role.name}</div>
+              <div style={{ ...styles.roleInputWrap, ...(isMobile ? { width: "100%" } : {}) }}>
+                <div style={{ display: "flex", gap: 10, ...(isMobile ? { flexDirection: "column" } : {}) }}>
                   <input value={value} onChange={(e) => setName(role.id, e.target.value)}
                     placeholder="Volunteer name" readOnly={locked}
                     style={{ ...styles.input, flex: 1, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }} />
