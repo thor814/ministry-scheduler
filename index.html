@@ -1216,7 +1216,7 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                       <col />
                     </colgroup>
                     <tbody>
-                      {block.rows.map((row) => (
+                      {(block.rows || []).map((row) => (
                         <tr key={row.id}>
                           <td style={styles.sheetTd}>{row.label}</td>
                           <td style={styles.sheetTd}><VolunteerCell row={row} /></td>
@@ -1571,7 +1571,7 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
               Compatible with every other team (like a TEAM JESUS PRAYER team)
             </label>
             <div style={styles.roleList}>
-              {team.roles.map((role) => (
+              {(team.roles || []).map((role) => (
                 <div key={role.id} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                   <div style={styles.roleEditRow}>
                     <input value={role.name} onChange={(e) => renameRole(team.id, role.id, e.target.value)} style={styles.roleEditInput} />
@@ -1811,7 +1811,7 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
                   </select>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {section.rows.map((row) => {
+                {(section.rows || []).map((row) => {
                   const draft = getOverrideDraft(row.id);
                   return (
                   <div key={row.id} style={{ border: "1px solid #E4DCC6", borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1926,7 +1926,7 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
                 <button onClick={() => removeSideBlock(block.id)} style={styles.linkDanger}>Remove</button>
               </div>
               <div style={styles.roleList}>
-                {block.rows.map((row) => (
+                {(block.rows || []).map((row) => (
                   <div key={row.id} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                     <div style={styles.roleEditRow}>
                       <input value={row.label} onChange={(e) => updateSideRow(block.id, row.id, "label", e.target.value)} style={styles.roleEditInput} />
