@@ -438,9 +438,9 @@ function findIssues(config, monthState, week, slot, teamId, roleId, name) {
   return issues;
 }
 
-function Watermark() {
+function Watermark({ position = "center" }) {
   return (
-    <div className="no-print" style={styles.watermark} aria-hidden="true">
+    <div className="no-print" style={{ ...styles.watermark, ...(position === "top" ? styles.watermarkTop : {}) }} aria-hidden="true">
       <img src="./icons/VictoryWatermark.png" alt="" style={styles.watermarkImg} />
     </div>
   );
@@ -763,7 +763,7 @@ function App() {
       </React.Fragment>
     );
   }
-  if (!authUser) return (<React.Fragment><Watermark /><AuthGate auth={auth} onSignedIn={setAuthUser} /></React.Fragment>);
+  if (!authUser) return (<React.Fragment><Watermark position="top" /><AuthGate auth={auth} onSignedIn={setAuthUser} /></React.Fragment>);
   if (!config || !monthState) {
     return (
       <React.Fragment>
@@ -2409,6 +2409,8 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
 
 const styles = {
   watermark: { position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 9999, opacity: 0.2 },
+  watermark: { position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 9999, opacity: 0.2 },
+  watermarkTop: { alignItems: "flex-start", paddingTop: 36 },
   watermarkImg: { width: "45%", maxWidth: 480, objectFit: "contain" },
   app: { display: "flex", minHeight: "100vh", background: "#F6F1E4", color: "#2A2620", fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif' },
   setupScreen: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F6F1E4", padding: 24 },
