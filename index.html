@@ -1206,11 +1206,15 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
           </table>
 
           {(program.sideBlocks || []).length > 0 && (
-            <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
               {program.sideBlocks.map((block) => (
-                <div key={block.id} style={{ flex: "1 1 260px", minWidth: 240 }}>
+                <div key={block.id}>
                   <div style={styles.sheetSectionHead}>{block.title}</div>
-                  <table style={styles.sheetTable}>
+                  <table style={{ ...styles.sheetTable, tableLayout: "fixed", width: "100%" }}>
+                    <colgroup>
+                      <col style={{ width: "58%" }} />
+                      <col />
+                    </colgroup>
                     <tbody>
                       {block.rows.map((row) => (
                         <tr key={row.id}>
@@ -1225,10 +1229,14 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
             </div>
           )}
 
-          <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
             {(program.soloRows || []).length > 0 && (
-              <div style={{ flex: "0 0 220px" }}>
-                <table style={styles.sheetTable}>
+              <div>
+                <table style={{ ...styles.sheetTable, tableLayout: "fixed", width: "100%" }}>
+                  <colgroup>
+                    <col style={{ width: "40%" }} />
+                    <col />
+                  </colgroup>
                   <tbody>
                     {program.soloRows.map((row) => (
                       <tr key={row.id}>
@@ -1240,7 +1248,7 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                 </table>
               </div>
             )}
-            <div style={{ flex: "1 1 260px" }}>
+            <div>
               <div style={styles.sheetSectionHead}>ANNOUNCEMENTS</div>
               <div style={{ border: "1px solid #23211D", borderTop: "none", padding: "8px 10px", fontSize: 12.5, whiteSpace: "pre-wrap", minHeight: 30 }}>{info.announcements || ""}</div>
             </div>
