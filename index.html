@@ -1053,23 +1053,15 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
     const applyPrintScale = () => {
       const el = sheetRef.current;
       if (!el) return;
-      el.style.transform = "none";
-      el.style.width = "";
+      el.style.zoom = "1";
       const contentWidth = el.scrollWidth;
       const contentHeight = el.scrollHeight;
       const scale = Math.min(1, PAGE_WIDTH_PX / contentWidth, PAGE_HEIGHT_PX / contentHeight);
-      if (scale < 1) {
-        el.style.transform = `scale(${scale})`;
-        el.style.transformOrigin = "top left";
-        el.style.width = `${(1 / scale) * 100}%`;
-      }
+      el.style.zoom = scale < 1 ? scale : "1";
     };
     const resetPrintScale = () => {
       const el = sheetRef.current;
-      if (el) {
-        el.style.transform = "";
-        el.style.width = "";
-      }
+      if (el) el.style.zoom = "1";
     };
     window.addEventListener("beforeprint", applyPrintScale);
     window.addEventListener("afterprint", resetPrintScale);
