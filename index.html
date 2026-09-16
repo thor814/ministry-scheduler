@@ -1,0 +1,2021 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="description" content="Assign volunteers and catch double-bookings across ministry teams." />
+<meta name="theme-color" content="#23211D" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Scheduler" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="icon" href="./icons/victory.png" />
+<link rel="apple-touch-icon" href="./icons/victory.png" />
+<title>Victory Alfonso</title>
+<style>
+  html, body { overflow-x: hidden; }
+  @media print {
+    .no-print { display: none !important; }
+    html, body { overflow: visible !important; background: #fff !important; }
+    .print-sheet { box-shadow: none !important; border: none !important; }
+    .print-sheet-wrap { max-width: none !important; padding: 0 !important; margin: 0 !important; }
+  }
+</style>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+</head>
+<body style="margin:0;">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ============================================================
+// Victory Alfonso — standalone installable version, synced
+// live across everyone using it via Firebase Realtime Database.
+// ============================================================
+
+// ---- 1) PASTE YOUR FIREBASE CONFIG HERE ----
+const firebaseConfig = {
+  apiKey: "AIzaSyDXePNefGXSH9OyvdnV1j0A1-13IM4QDQQ",
+  authDomain: "ministry-scheduler-7b834.firebaseapp.com",
+  databaseURL: "https://ministry-scheduler-7b834-default-rtdb.firebaseio.com",
+  projectId: "ministry-scheduler-7b834",
+  storageBucket: "ministry-scheduler-7b834.firebasestorage.app",
+  messagingSenderId: "854617979344",
+  appId: "1:854617979344:web:f012af287911307547e1d5",
+};
+
+const FIREBASE_CONFIGURED = !Object.values(firebaseConfig).some(
+  (v) => typeof v === "string" && v.startsWith("PASTE_YOUR")
+);
+
+let configRef = null;
+if (FIREBASE_CONFIGURED) {
+  firebase.initializeApp(firebaseConfig);
+  configRef = firebase.database().ref("ministry-scheduler-config");
+}
+
+const STORAGE_KEY = "ministry-scheduler-state-v1";
+const SLOTS = ["9:00 AM", "11:00 AM"];
+const WEEKS = [1, 2, 3, 4, 5];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+function periodKey(year, month) {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+function monthLabel(year, month) {
+  return `${MONTH_NAMES[month - 1]} ${year}`;
+}
+function monthRef(year, month) {
+  return firebase.database().ref(`ministry-scheduler-months/${periodKey(year, month)}`);
+}
+
+const DEFAULT_TEAMS = [
+  { id: "admin", name: "Service Lead", flexible: false, roles: [
+      { id: "flow", name: "Program Flow" },
+      { id: "encouragement", name: "Word of Encouragement" },
+      { id: "ctw", name: "Call to Worship" },
+      { id: "giving", name: "Giving" },
+      { id: "word", name: "Word" },
+      { id: "benediction", name: "Benediction" },
+  ]},
+  { id: "music", name: "Worship Team", flexible: false, roles: [
+      { id: "worship-leader", name: "Worship Leader" },
+      { id: "song-leader", name: "Song Leader" },
+      { id: "guitar", name: "Guitar" },
+      { id: "drums", name: "Drums" },
+  ]},
+  { id: "kids", name: "Kids Ministry", flexible: false, roles: [
+      { id: "teacher", name: "Teacher" },
+      { id: "asst-teacher", name: "Assistant Teacher" },
+      { id: "huddle", name: "Huddle Leader/Pre-Teens" },
+  ]},
+  { id: "tech", name: "Tech Team", flexible: false, roles: [
+      { id: "tech", name: "Tech / Sound" },
+  ]},
+  { id: "ushers", name: "Ushers", flexible: false, roles: [
+      { id: "leader", name: "Team Leader" },
+      { id: "parking", name: "Parking" },
+      { id: "greeting", name: "Greeting" },
+  ]},
+  { id: "prayer", name: "TEAM JESUS PRAYER", flexible: true, roles: [
+      { id: "prayer", name: "Team JESUS Prayer" },
+  ]},
+];
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+const norm = (s) => (s || "").toString().trim();
+const normKey = (s) => norm(s).toLowerCase();
+const pairKey = (a, b) => [a, b].sort().join("~");
+const assignKey = (week, slot, teamId, roleId) => `${week}|${slot}|${teamId}|${roleId}`;
+const roleTag = (teamId, roleId) => `${teamId}::${roleId}`;
+const serviceInfoKey = (week, slot) => `${week}|${slot}`;
+
+// Returns the date of the nth Sunday of the given month/year (week is
+// 1-indexed), or null if that month doesn't have that many Sundays.
+function nthSundayOfMonth(year, month, week) {
+  const first = new Date(year, month - 1, 1);
+  const offsetToFirstSunday = (7 - first.getDay()) % 7;
+  const day = 1 + offsetToFirstSunday + (week - 1) * 7;
+  const date = new Date(year, month - 1, day);
+  return date.getMonth() === month - 1 ? date : null;
+}
+function formatDateLong(date) {
+  return `${MONTH_NAMES[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+}
+
+// Every service here is on a Sunday, so by default this figures out the
+// date for the week automatically (the nth Sunday of the month) — no need
+// to set it by hand. A manual entry in "Week dates" (Manage Teams) always
+// wins, for the rare service that isn't on the usual Sunday.
+function weekDisplayLabel(week, weekLabels, year, month) {
+  const manual = norm(weekLabels && weekLabels[week]);
+  if (manual) return manual;
+  if (year && month) {
+    const auto = nthSundayOfMonth(year, month, week);
+    if (auto) return formatDateLong(auto);
+  }
+  return `Week ${week}`;
+}
+
+// The fixed id of the default "Service Lead" team. Editing rights on the
+// Service Details tab are tied specifically to this team id.
+const ADMIN_TEAM_ID = "admin";
+
+// Restriction entries used to be a single team id string, then a plain
+// array of team ids. Now an entry can also carry a canManage flag so an
+// editor keeps Manage Teams access. Normalize any shape into
+// { teams: [...], canManage: bool }.
+function toTeamIdArray(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === "string" && val) return [val];
+  return [];
+}
+function normalizeRestriction(val) {
+  if (val && typeof val === "object" && !Array.isArray(val)) {
+    return { teams: toTeamIdArray(val.teams), canManage: !!val.canManage };
+  }
+  return { teams: toTeamIdArray(val), canManage: false };
+}
+
+// ---- Who's logged in ----
+const CLIENT_ID_KEY = "ministry-scheduler-client-id";
+const USER_NAME_KEY = "ministry-scheduler-user-name";
+
+function getClientId() {
+  let id = localStorage.getItem(CLIENT_ID_KEY);
+  if (!id) {
+    id = uid() + uid();
+    localStorage.setItem(CLIENT_ID_KEY, id);
+  }
+  return id;
+}
+
+function getStoredName() {
+  return norm(localStorage.getItem(USER_NAME_KEY) || "");
+}
+
+// The printable run sheet's program flow is its own configurable structure,
+// separate from Teams/Roles (per the "fixed items, print sheet only" setup
+// choice). A row can either be linked to an existing team/role (so it pulls
+// the live assignment + conflict flags from the Assign tab), given fixed
+// text that's the same every month (e.g. "ALL AVAILABLE USHERS"), or left
+// blank so it becomes a free-text box editable right on the print page.
+//
+// A row can also carry `showWeeks: [1,2,...]` to appear only on specific
+// service weeks (e.g. Communion on Week 1 only). Omitted/empty means the
+// row shows on every week.
+function defaultPrintProgram() {
+  return {
+    sections: [
+      { id: "sec-call", kind: "group", program: "CALL TIME", rows: [
+        { id: "r-chairs", time: "08:00 – 09:00", duration: "1 HR", task: "SET UP CHAIRS AND TABLES", fixedText: "ALL AVAILABLE USHERS" },
+        { id: "r-musicprac", time: "08:00 – 08:30", duration: "30 MINS", task: "MUSIC TEAM PRACTICE", fixedText: "WORSHIP TEAM" },
+      ]},
+      { id: "sec-huddle", kind: "group", program: "HUDDLE", rows: [
+        { id: "r-flowrecap", time: "08:30 – 08:50", duration: "20 MINS", task: "PROGRAM FLOW RECAP", linkedRole: roleTag("admin", "flow") },
+        { id: "r-encourage", time: "", duration: "", task: "WORD OF ENCOURAGEMENT", linkedRole: roleTag("admin", "encouragement") },
+        { id: "r-teamprayer", time: "", duration: "", task: "TEAM JESUS PRAYER", linkedRole: roleTag("prayer", "prayer") },
+      ]},
+      { id: "sec-prehouse", kind: "group", program: "", rows: [
+        { id: "r-house1", time: "08:40 – 08:55", duration: "15 MINS", task: "Play In House Music (Victory Worship)" },
+        { id: "r-house2", time: "08:55 – 09:00", duration: "5 MINS", task: "COUNTDOWN / Play In House Music (Victory Worship)" },
+      ]},
+      { id: "div-start", kind: "divider", label: "START OF 9:00 AM SERVICE" },
+      { id: "sec-ctw", kind: "group", program: "", rows: [
+        { id: "r-ctw", time: "09:00 – 09:02", duration: "2 MINS", task: "CALL TO WORSHIP", linkedRole: roleTag("admin", "ctw"), checkbox: true },
+      ]},
+      { id: "sec-praise", kind: "group", program: "PRAISE AND WORSHIP", rows: [
+        { id: "r-worshipleader", time: "09:02 – 09:20", duration: "18 MINS", task: "WORSHIP LEADER", linkedRole: roleTag("music", "worship-leader") },
+        { id: "r-songleader", time: "", duration: "", task: "SONG LEADER", linkedRole: roleTag("music", "song-leader") },
+        { id: "r-guitar", time: "", duration: "", task: "GUITAR", linkedRole: roleTag("music", "guitar") },
+        { id: "r-drums", time: "", duration: "", task: "DRUMS", linkedRole: roleTag("music", "drums") },
+        { id: "r-song1", time: "", duration: "", task: "Song 1" },
+        { id: "r-song2", time: "", duration: "", task: "Song 2" },
+        { id: "r-song3", time: "", duration: "", task: "Song 3" },
+      ]},
+      { id: "sec-flow", kind: "group", program: "", rows: [
+        { id: "r-transition", time: "09:20 – 09:25", duration: "5 MINS", task: "TRANSITION / ANNOUNCEMENT", linkedRole: roleTag("admin", "flow") },
+        { id: "r-giving", time: "09:25 – 09:28", duration: "3 MINS", task: "GIVING", linkedRole: roleTag("admin", "giving") },
+        { id: "r-word", time: "09:28 – 09:53", duration: "25 MINS", task: "WORD", linkedRole: roleTag("admin", "word") },
+        { id: "r-ministry", time: "09:53 – 09:58", duration: "5 MINS", task: "MINISTRY TIME", linkedRole: roleTag("admin", "word") },
+        { id: "r-celebration", time: "09:58 – 10:01", duration: "3 MINS", task: "CELEBRATION SONG", linkedRole: roleTag("music", "worship-leader") },
+        { id: "r-communion", time: "10:01 – 10:08", duration: "7 MINS", task: "COMMUNION", fixedText: "ALL AVAILABLE USHERS", showWeeks: [1] },
+        { id: "r-benediction", time: "10:08 – 10:10", duration: "2 MINS", task: "BENEDICTION", linkedRole: roleTag("admin", "benediction") },
+      ]},
+      { id: "div-end", kind: "divider", label: "END OF 9:00 AM SERVICE", time: "10:10" },
+    ],
+    sideBlocks: [
+      { id: "side-kids", title: "KIDS AND PRETEENS COACHES", rows: [
+        { id: "sk-teacher", label: "Teacher", linkedRole: roleTag("kids", "teacher") },
+        { id: "sk-asst", label: "Asst Teacher", linkedRole: roleTag("kids", "asst-teacher") },
+        { id: "sk-huddle", label: "Huddle Leader (Pre-Teens)", linkedRole: roleTag("kids", "huddle") },
+        { id: "sk-crafts", label: "Crafts Prep" },
+      ]},
+      { id: "side-ushers", title: "USHERING TEAM", rows: [
+        { id: "su-leader", label: "Leader", linkedRole: roleTag("ushers", "leader") },
+        { id: "su-teamlead", label: "Team Leader of the Day" },
+        { id: "su-parking", label: "Parking", linkedRole: roleTag("ushers", "parking") },
+        { id: "su-welcome", label: "Welcome / Giving Bag / Ushering People to Seats", linkedRole: roleTag("ushers", "greeting") },
+        { id: "su-pulpit", label: "Pulpit Assist" },
+      ]},
+    ],
+    soloRows: [
+      { id: "solo-admin", label: "Admin" },
+      { id: "solo-tech", label: "Tech", linkedRole: roleTag("tech", "tech") },
+      { id: "solo-photo", label: "Photographer" },
+    ],
+  };
+}
+
+function emptyConfig() {
+  return { teams: DEFAULT_TEAMS, compatiblePairs: [], compatibleGroups: [], restrictions: {}, printProgram: defaultPrintProgram() };
+}
+function emptyMonthState() {
+  return { assignments: {}, weekLabels: {}, serviceInfo: {}, verses: {}, checks: {}, customValues: {} };
+}
+
+// The Print Program's time/duration fields are authored once, against the
+// first service slot (SLOTS[0], e.g. "9:00 AM"). For any other slot (e.g.
+// "11:00 AM"), clock times are shifted automatically by the gap between
+// that slot and the first one, so the run sheet always shows the right
+// wall-clock times without having to type the schedule twice. Durations
+// (e.g. "18 MINS") are left alone since they don't depend on the slot.
+function parseClockToMinutes(str) {
+  const s = norm(str);
+  if (!s) return null;
+  let m = s.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+  if (m) {
+    let h = parseInt(m[1], 10) % 12;
+    const min = parseInt(m[2], 10);
+    if (/pm/i.test(m[3])) h += 12;
+    return h * 60 + min;
+  }
+  m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  return null;
+}
+function minutesToHHMM(total) {
+  const wrapped = ((total % 1440) + 1440) % 1440;
+  const h = Math.floor(wrapped / 60);
+  const m = wrapped % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+function slotOffsetMinutes(slot) {
+  const base = parseClockToMinutes(SLOTS[0]);
+  const cur = parseClockToMinutes(slot);
+  if (base == null || cur == null) return 0;
+  return cur - base;
+}
+function shiftTimeText(text, offsetMinutes) {
+  const s = norm(text);
+  if (!s || !offsetMinutes) return s;
+  const parts = s.split(/\s[–-]\s/);
+  if (parts.length === 2) {
+    const a = parseClockToMinutes(parts[0]);
+    const b = parseClockToMinutes(parts[1]);
+    if (a != null && b != null) return `${minutesToHHMM(a + offsetMinutes)} – ${minutesToHHMM(b + offsetMinutes)}`;
+    return s;
+  }
+  const single = parseClockToMinutes(s);
+  if (single != null) return minutesToHHMM(single + offsetMinutes);
+  return s;
+}
+function shiftDividerLabel(label, slot) {
+  const s = norm(label);
+  if (!s) return s;
+  const base = SLOTS[0];
+  if (slot === base) return s;
+  if (s.includes(base)) return s.split(base).join(slot);
+  return s;
+}
+
+// A print-program row can be limited to specific service weeks via
+// `showWeeks: [1,2,...]`. No showWeeks (or an empty list) means "every week".
+function rowVisibleForWeek(row, week) {
+  return !row.showWeeks || row.showWeeks.length === 0 || row.showWeeks.includes(week);
+}
+
+// A print-program row's Time/Duration can also be overridden for specific
+// weeks and/or specific slots (e.g. Celebration Song runs 3 MINS on Week 1
+// but 5 MINS on Weeks 2-5, or a future 3:00 PM service needs its own
+// schedule entirely). `row.overrides` is a list of
+// { id, weeks: [..] (empty = every week), slots: [..] (empty = every slot),
+//   time, duration }. The most specific match wins (an override naming both
+// weeks and slots beats one naming only weeks or only slots; ties go to the
+// override added most recently). If a matching override supplies a time,
+// that time is used exactly as typed (no auto-shifting) since it was
+// authored for that slot directly; if it leaves time blank (overriding only
+// duration), the normal shifted base time is used instead.
+function overrideSpecificity(ov) {
+  return (ov.weeks && ov.weeks.length ? 2 : 0) + (ov.slots && ov.slots.length ? 1 : 0);
+}
+function resolveRowTiming(row, week, slot, timeOffset) {
+  const overrides = row.overrides || [];
+  let best = null;
+  let bestScore = -1;
+  overrides.forEach((ov) => {
+    const weekOk = !ov.weeks || ov.weeks.length === 0 || ov.weeks.includes(week);
+    const slotOk = !ov.slots || ov.slots.length === 0 || ov.slots.includes(slot);
+    if (!weekOk || !slotOk) return;
+    const score = overrideSpecificity(ov);
+    if (score >= bestScore) { bestScore = score; best = ov; }
+  });
+  const timeIsOverridden = !!(best && norm(best.time));
+  const duration = best && norm(best.duration) ? best.duration : row.duration;
+  const time = timeIsOverridden ? best.time : shiftTimeText(row.time, timeOffset);
+  return { time: time || "", duration: duration || "" };
+}
+
+// Resolve what a print-program row should display: a linked team/role's
+// live assignment (with conflict flags), fixed text that's the same every
+// month, or a free-text box the user can type into right on the print page.
+// Free-text values are keyed by week+slot+row so each service keeps its
+// own text (e.g. different songs each Sunday).
+function resolvePrintRow(config, monthState, week, slot, row) {
+  if (row.linkedRole) {
+    const [teamId, roleId] = row.linkedRole.split("::");
+    const team = config.teams.find((t) => t.id === teamId);
+    const role = team && team.roles.find((r) => r.id === roleId);
+    if (team && role) {
+      const key = assignKey(week, slot, teamId, roleId);
+      const name = monthState.assignments[key] || "";
+      const issues = name ? findIssues(config, monthState, week, slot, teamId, roleId, name) : [];
+      return { value: name, editable: false, issues };
+    }
+  }
+  if (norm(row.fixedText)) return { value: row.fixedText, editable: false, issues: [] };
+  const cvKey = `${week}|${slot}|${row.id}`;
+  const value = (monthState.customValues && monthState.customValues[cvKey]) || "";
+  return { value, editable: true, issues: [] };
+}
+
+// Resolve the live value behind a role tag (e.g. "music::song-leader"),
+// used for the extra lines that can be shown under a Program-column label
+// (e.g. song titles listed under "PRAISE AND WORSHIP").
+function resolveRoleTagValue(config, monthState, week, slot, tag) {
+  const [teamId, roleId] = (tag || "").split("::");
+  const team = config.teams.find((t) => t.id === teamId);
+  const role = team && team.roles.find((r) => r.id === roleId);
+  if (!team || !role) return "";
+  const key = assignKey(week, slot, teamId, roleId);
+  return monthState.assignments[key] || "";
+}
+
+function isCompatible(teamAId, teamBId, teams, compatiblePairs) {
+  if (teamAId === teamBId) return true;
+  const a = teams.find((t) => t.id === teamAId);
+  const b = teams.find((t) => t.id === teamBId);
+  if ((a && a.flexible) || (b && b.flexible)) return true;
+  return compatiblePairs.includes(pairKey(teamAId, teamBId));
+}
+
+function findIssues(config, monthState, week, slot, teamId, roleId, name) {
+  const target = normKey(name);
+  if (!target) return [];
+  const issues = [];
+  const selfKey = assignKey(week, slot, teamId, roleId);
+  const selfTag = roleTag(teamId, roleId);
+  for (const [key, val] of Object.entries(monthState.assignments)) {
+    if (key === selfKey) continue;
+    if (normKey(val) !== target) continue;
+    const [w, s, tId, rId] = key.split("|");
+    if (Number(w) !== week || s !== slot) continue;
+    const otherTeam = config.teams.find((t) => t.id === tId);
+    const otherRole = otherTeam && otherTeam.roles.find((r) => r.id === rId);
+    if (!otherTeam || !otherRole) continue;
+
+    const otherTag = roleTag(tId, rId);
+    const explicitlyAllowed = (config.compatibleGroups || []).some((g) => g.includes(selfTag) && g.includes(otherTag));
+    if (explicitlyAllowed) continue;
+
+    if (tId === teamId) {
+      issues.push({ type: "duplicate", team: otherTeam, role: otherRole });
+    } else if (!isCompatible(teamId, tId, config.teams, config.compatiblePairs)) {
+      issues.push({ type: "conflict", team: otherTeam, role: otherRole });
+    }
+  }
+  return issues;
+}
+
+function Watermark() {
+  return (
+    <div className="no-print" style={styles.watermark} aria-hidden="true">
+      <img src="./icons/VictoryWatermark.png" alt="" style={styles.watermarkImg} />
+    </div>
+  );
+}
+
+function SetupScreen() {
+  return (
+    <div style={styles.setupScreen}>
+      <div style={styles.setupCard}>
+        <h1 style={{ ...styles.h1, marginBottom: 10 }}>One setup step left</h1>
+        <p style={styles.setupText}>
+          This app is built to sync live across everyone using it, but it
+          needs a free Firebase database to do that. Open{" "}
+          <code style={styles.code}>index.html</code> in a text editor, find
+          the <code style={styles.code}>firebaseConfig</code> block near the
+          top of the script, and paste in your project's config.
+        </p>
+        <p style={styles.setupText}>
+          Full step-by-step instructions are in <code style={styles.code}>README.txt</code>.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function NameGate({ onSubmit }) {
+  const [name, setName] = useState("");
+  const submit = () => {
+    const clean = norm(name);
+    if (!clean) return;
+    localStorage.setItem(USER_NAME_KEY, clean);
+    onSubmit(clean);
+  };
+  return (
+    <div style={styles.setupScreen}>
+      <div style={styles.setupCard}>
+        <h1 style={{ ...styles.h1, marginBottom: 10 }}>Who's this?</h1>
+        <p style={styles.setupText}>
+          Enter your name so others can see who's currently using the
+          scheduler. This is remembered on this device only.
+        </p>
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <input value={name} onChange={(e) => setName(e.target.value)}
+            placeholder="Your name" style={styles.input}
+            onKeyDown={(e) => { if (e.key === "Enter") submit(); }} autoFocus />
+          <button onClick={submit} style={styles.smallBtn}>Continue</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [config, setConfig] = useState(null);
+  const [monthState, setMonthState] = useState(null);
+  const [week, setWeek] = useState(1);
+  const [slot, setSlot] = useState(SLOTS[0]);
+  const [activeTeamId, setActiveTeamId] = useState(DEFAULT_TEAMS[0].id);
+  const [tab, setTab] = useState("assign");
+  const [userName, setUserName] = useState(getStoredName());
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.matchMedia("(max-width: 860px)").matches : false));
+  const saveTimer = useRef(null);
+  const configSaveTimer = useRef(null);
+  const migratedRef = useRef(false);
+
+  useEffect(() => {
+    if (!FIREBASE_CONFIGURED) return;
+    const listener = configRef.on("value", (snapshot) => {
+      const val = snapshot.val();
+      if (val) {
+        const safeTeams = (val.teams || DEFAULT_TEAMS).map((t) => ({
+          ...t,
+          roles: t.roles || [],
+        }));
+        setConfig({ ...emptyConfig(), ...val, teams: safeTeams, printProgram: val.printProgram || defaultPrintProgram() });
+        return;
+      }
+      if (migratedRef.current) return;
+      migratedRef.current = true;
+      firebase.database().ref("ministry-scheduler-state").once("value").then((oldSnap) => {
+        const old = oldSnap.val();
+        if (old && (old.teams || old.assignments)) {
+          const conf = { teams: old.teams || DEFAULT_TEAMS, compatiblePairs: old.compatiblePairs || [], compatibleGroups: old.compatibleGroups || [], restrictions: old.restrictions || {} };
+          configRef.set(conf);
+          setConfig(conf);
+          const curKey = periodKey(now.getFullYear(), now.getMonth() + 1);
+          firebase.database().ref(`ministry-scheduler-months/${curKey}`).set({
+            assignments: old.assignments || {},
+            weekLabels: old.weekLabels || {},
+          });
+        } else {
+          const conf = emptyConfig();
+          configRef.set(conf);
+          setConfig(conf);
+        }
+      });
+    });
+    return () => configRef.off("value", listener);
+  }, []);
+
+  useEffect(() => {
+    if (!FIREBASE_CONFIGURED) return;
+    setMonthState(null);
+    const ref = monthRef(year, month);
+    const listener = ref.on("value", (snapshot) => {
+      setMonthState({ ...emptyMonthState(), ...(snapshot.val() || {}) });
+    });
+    return () => ref.off("value", listener);
+  }, [year, month]);
+
+  useEffect(() => {
+    if (!FIREBASE_CONFIGURED || !userName) return;
+    const clientId = getClientId();
+    const myPresenceRef = firebase.database().ref(`presence/${clientId}`);
+    const connectedRef = firebase.database().ref(".info/connected");
+    const onConnected = connectedRef.on("value", (snap) => {
+      if (snap.val() === true) {
+        myPresenceRef.onDisconnect().remove();
+        myPresenceRef.set({ name: userName, since: firebase.database.ServerValue.TIMESTAMP });
+      }
+    });
+    const presenceListRef = firebase.database().ref("presence");
+    const onPresence = presenceListRef.on("value", (snapshot) => {
+      const val = snapshot.val() || {};
+      setOnlineUsers(Object.entries(val).map(([id, v]) => ({ id, ...v })));
+    });
+    return () => {
+      connectedRef.off("value", onConnected);
+      presenceListRef.off("value", onPresence);
+      myPresenceRef.remove();
+    };
+  }, [userName]);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 860px)");
+    const handler = (e) => setIsMobile(e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else mq.removeListener(handler);
+    };
+  }, []);
+
+  const updateConfig = useCallback((updater) => {
+    setConfig((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      clearTimeout(configSaveTimer.current);
+      configSaveTimer.current = setTimeout(() => {
+        if (configRef) configRef.set(next);
+      }, 300);
+      return next;
+    });
+  }, []);
+
+  const updateMonthState = useCallback((updater) => {
+    setMonthState((prev) => {
+      const base = prev || emptyMonthState();
+      const next = typeof updater === "function" ? updater(base) : updater;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        monthRef(year, month).set(next);
+      }, 300);
+      return next;
+    });
+  }, [year, month]);
+
+  const shiftMonth = (delta) => {
+    let m = month + delta;
+    let y = year;
+    while (m > 12) { m -= 12; y += 1; }
+    while (m < 1) { m += 12; y -= 1; }
+    setMonth(m);
+    setYear(y);
+  };
+
+  // Whether this name has an explicit entry in the restrictions list at all.
+  // No entry = this person cannot edit any ministry's assignments, the
+  // service details tab, or Manage Teams. Only names on the list with
+  // "can manage teams" checked get into Manage Teams — EXCEPT: if literally
+  // no one in the whole list has "can manage teams" checked yet, Manage
+  // Teams stays open to everyone. Without this, the very first save could
+  // lock everyone out with no way back in through the app.
+  const hasRestrictionEntry = !!config && Object.prototype.hasOwnProperty.call(config.restrictions || {}, normKey(userName));
+  const restrictionsObj = config ? (config.restrictions || {}) : {};
+  const noManagerSetYet = !Object.values(restrictionsObj).some((v) => normalizeRestriction(v).canManage);
+  const restrictionEntry = config ? normalizeRestriction((config.restrictions || {})[normKey(userName)]) : { teams: [], canManage: false };
+  const allowedTeamIds = restrictionEntry.teams;
+  const canManage = (hasRestrictionEntry && restrictionEntry.canManage) || noManagerSetYet;
+  const canEditServiceInfo = allowedTeamIds.includes(ADMIN_TEAM_ID);
+
+  useEffect(() => {
+    if (!hasRestrictionEntry) return;
+    if (allowedTeamIds.length && !allowedTeamIds.includes(activeTeamId)) setActiveTeamId(allowedTeamIds[0]);
+    if (tab === "manage" && !canManage) setTab("assign");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasRestrictionEntry, canManage, allowedTeamIds.join(","), activeTeamId, tab]);
+
+  if (!FIREBASE_CONFIGURED) return (<React.Fragment><Watermark /><SetupScreen /></React.Fragment>);
+  if (!userName) return (<React.Fragment><Watermark /><NameGate onSubmit={setUserName} /></React.Fragment>);
+  if (!config || !monthState) {
+    return (
+      <React.Fragment>
+        <Watermark />
+        <div style={styles.setupScreen}>
+          <div style={styles.setupText}>Connecting…</div>
+        </div>
+      </React.Fragment>
+    );
+  }
+
+  const activeTeam = config.teams.find((t) => t.id === activeTeamId) || config.teams[0];
+  const effectiveTab = !canManage && tab === "manage" ? "assign" : tab;
+
+  return (
+    <React.Fragment>
+      <Watermark />
+      <div style={styles.app}>
+      <Sidebar config={config} monthState={monthState} week={week} setWeek={setWeek} slot={slot} setSlot={setSlot}
+        tab={effectiveTab} setTab={setTab} activeTeamId={activeTeam && activeTeam.id}
+        setActiveTeamId={setActiveTeamId} userName={userName} onlineUsers={onlineUsers}
+        allowedTeamIds={allowedTeamIds} hasRestrictionEntry={hasRestrictionEntry} canManage={canManage} monthLabelText={monthLabel(year, month)}
+        year={year} month={month}
+        onPrevMonth={() => shiftMonth(-1)} onNextMonth={() => shiftMonth(1)} isMobile={isMobile} />
+      <main style={{ ...styles.main, ...(isMobile ? styles.mainMobile : {}) }}>
+        {isMobile && (
+          <MobileControls monthState={monthState} week={week} setWeek={setWeek} slot={slot} setSlot={setSlot}
+            monthLabelText={monthLabel(year, month)} year={year} month={month} onPrevMonth={() => shiftMonth(-1)} onNextMonth={() => shiftMonth(1)}
+            onlineUsers={onlineUsers} userName={userName} />
+        )}
+        {effectiveTab === "assign" && (
+          <AssignView config={config} monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot} team={activeTeam}
+            year={year} month={month} locked={!activeTeam || !allowedTeamIds.includes(activeTeam.id)} />
+        )}
+        {effectiveTab === "info" && (
+          <ServiceInfoView monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot}
+            year={year} month={month} locked={!canEditServiceInfo} />
+        )}
+        {effectiveTab === "master" && <MasterListView config={config} monthState={monthState} updateMonthState={updateMonthState} week={week} slot={slot} year={year} month={month} />}
+        {effectiveTab === "manage" && canManage && (
+          <ManageView config={config} updateConfig={updateConfig} monthState={monthState} updateMonthState={updateMonthState}
+            monthLabelText={monthLabel(year, month)} year={year} month={month} />
+        )}
+      </main>
+
+      </div>
+    </React.Fragment>
+  );
+}
+
+function MobileControls({ monthState, week, setWeek, slot, setSlot, monthLabelText, year, month, onPrevMonth, onNextMonth, onlineUsers, userName }) {
+  const others = (onlineUsers || []).filter((u) => norm(u.name).toLowerCase() !== norm(userName).toLowerCase());
+  const namesTitle = [userName, ...others.map((u) => u.name)].join(", ");
+  return (
+    <div className="no-print" style={styles.mobileControls}>
+      <div style={styles.mobileControlsRow}>
+        <div style={styles.mobileMonthNav}>
+          <button onClick={onPrevMonth} style={styles.monthNavBtn} aria-label="Previous month">‹</button>
+          <div style={styles.mobileMonthLabel}>{monthLabelText}</div>
+          <button onClick={onNextMonth} style={styles.monthNavBtn} aria-label="Next month">›</button>
+        </div>
+        <div style={styles.mobilePresencePill} title={namesTitle}>🟢 {1 + others.length} online</div>
+      </div>
+      <div style={styles.mobileControlsRow}>
+        {WEEKS.map((w) => (
+          <button key={w} onClick={() => setWeek(w)}
+            style={{ ...styles.mobileWeekBtn, ...(w === week ? styles.weekBtnActive : {}) }}>
+            {w}
+          </button>
+        ))}
+        {SLOTS.map((s) => (
+          <button key={s} onClick={() => setSlot(s)}
+            style={{ ...styles.mobileSlotBtn, ...(s === slot ? styles.slotBtnActive : {}) }}>
+            {s}
+          </button>
+        ))}
+      </div>
+      <div style={styles.mobileWeekDate}>{weekDisplayLabel(week, monthState.weekLabels, year, month)}</div>
+    </div>
+  );
+}
+
+function initials(name) {
+  const parts = norm(name).split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+const TAB_ICONS = { assign: "👥", info: "📝", master: "📋", manage: "⚙️" };
+
+function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab, activeTeamId, setActiveTeamId, userName, onlineUsers, allowedTeamIds, hasRestrictionEntry, canManage, monthLabelText, year, month, onPrevMonth, onNextMonth, isMobile }) {
+  const others = (onlineUsers || []).filter((u) => norm(u.name).toLowerCase() !== norm(userName).toLowerCase());
+  const switchUser = () => {
+    localStorage.removeItem(USER_NAME_KEY);
+    window.location.reload();
+  };
+
+  if (isMobile) {
+    return (
+      <aside className="no-print" style={styles.sidebarCompact}>
+        <img src="./icons/victory.png" alt="" style={styles.compactBrandMark} />
+        <nav style={styles.compactNavList}>
+          <CompactNavItem icon={TAB_ICONS.assign} label="Assign" active={tab === "assign"} onClick={() => setTab("assign")} />
+          <CompactNavItem icon={TAB_ICONS.info} label="Details" active={tab === "info"} onClick={() => setTab("info")} />
+          <CompactNavItem icon={TAB_ICONS.master} label="Master" active={tab === "master"} onClick={() => setTab("master")} />
+          {canManage && <CompactNavItem icon={TAB_ICONS.manage} label="Manage" active={tab === "manage"} onClick={() => setTab("manage")} />}
+        </nav>
+        {tab === "assign" && (
+          <React.Fragment>
+            <div style={styles.compactDivider} />
+            <nav style={styles.compactNavList}>
+              {config.teams.map((t) => {
+                const isLocked = !allowedTeamIds.includes(t.id);
+                return (
+                  <CompactNavItem key={t.id} icon={initials(t.name)} label={t.name} active={t.id === activeTeamId}
+                    onClick={() => { if (!isLocked) setActiveTeamId(t.id); }} dim={t.flexible || isLocked} locked={isLocked} small />
+                );
+              })}
+            </nav>
+          </React.Fragment>
+        )}
+        <button onClick={switchUser} style={styles.compactSwitchUser} aria-label="Switch user" title={`${userName} — tap to switch`}>
+          {initials(userName)}
+        </button>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="no-print" style={styles.sidebar}>
+      <div>
+        <div style={styles.brand}>
+          <img src="./icons/victory.png" alt="" style={styles.brandMark} />
+          <div>
+            <div style={styles.brandTitle}>Victory Alfonso</div>
+            <div style={styles.brandSub}>Synced live with everyone</div>
+          </div>
+        </div>
+
+        {userName && (
+          <div style={styles.whosHere}>
+            <div style={styles.sectionLabel}>Who's here</div>
+            <div style={styles.presenceRow}>
+              <span style={styles.presenceDot} />
+              <span style={styles.presenceName}>{userName} (you)</span>
+            </div>
+            {others.map((u) => (
+              <div key={u.id} style={styles.presenceRow}>
+                <span style={styles.presenceDot} />
+                <span style={styles.presenceName}>{u.name}</span>
+              </div>
+            ))}
+            <button onClick={switchUser} style={styles.switchUserLink}>Not you? Switch</button>
+          </div>
+        )}
+
+        <div style={styles.sectionLabel}>Month</div>
+        <div style={styles.monthNavRow}>
+          <button onClick={onPrevMonth} style={styles.monthNavBtn} aria-label="Previous month">‹</button>
+          <div style={styles.monthNavLabel}>{monthLabelText}</div>
+          <button onClick={onNextMonth} style={styles.monthNavBtn} aria-label="Next month">›</button>
+        </div>
+
+        <div style={styles.sectionLabel}>Service</div>
+        <div style={styles.weekRow}>
+          {WEEKS.map((w) => (
+            <button key={w} onClick={() => setWeek(w)}
+              style={{ ...styles.weekBtn, ...(w === week ? styles.weekBtnActive : {}) }}>
+              {w}
+            </button>
+          ))}
+        </div>
+        <div style={styles.weekDateLabel}>{weekDisplayLabel(week, monthState.weekLabels, year, month)}</div>
+
+        <div style={styles.slotRow}>
+          {SLOTS.map((s) => (
+            <button key={s} onClick={() => setSlot(s)}
+              style={{ ...styles.slotBtn, ...(s === slot ? styles.slotBtnActive : {}) }}>
+              {s}
+            </button>
+          ))}
+        </div>
+
+        <div style={styles.sectionLabel}>View</div>
+        <nav style={styles.navList}>
+          <NavItem label="Assign volunteers" active={tab === "assign"} onClick={() => setTab("assign")} />
+          <NavItem label="Service details" active={tab === "info"} onClick={() => setTab("info")} />
+          <NavItem label="Master list" active={tab === "master"} onClick={() => setTab("master")} />
+          {canManage && (
+            <NavItem label="Manage teams" active={tab === "manage"} onClick={() => setTab("manage")} />
+          )}
+        </nav>
+
+        {tab === "assign" && (
+          <React.Fragment>
+            <div style={styles.sectionLabel}>Team</div>
+            <nav style={styles.navList}>
+              {config.teams.map((t) => {
+                const isLocked = !allowedTeamIds.includes(t.id);
+                return (
+                  <NavItem key={t.id} label={isLocked ? `🔒 ${t.name}` : t.name} active={t.id === activeTeamId}
+                    onClick={() => { if (!isLocked) setActiveTeamId(t.id); }} dim={t.flexible || isLocked}
+                    disabled={isLocked} />
+                );
+              })}
+            </nav>
+            {hasRestrictionEntry ? (
+              <div style={styles.restrictedNote}>
+                {allowedTeamIds.length
+                  ? "You can only edit " + (allowedTeamIds.length === 1 ? "this ministry." : "these ministries.")
+                  : "You don't have edit access to any ministry yet."}
+              </div>
+            ) : (
+              <div style={styles.restrictedNote}>You're not on the editors list yet, so ministries are view only for you.</div>
+            )}
+          </React.Fragment>
+        )}
+      </div>
+      <div style={styles.sidebarFoot}>
+        Everyone who opens this app sees the same live schedule. Install
+        it to your home screen so it's always one tap away.
+      </div>
+    </aside>
+  );
+}
+
+function NavItem({ label, active, onClick, dim, disabled }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      style={{ ...styles.navItem, ...(active ? styles.navItemActive : {}), ...(dim && !active ? { opacity: 0.7 } : {}),
+        ...(disabled ? { cursor: "default" } : {}) }}>
+      {label}
+    </button>
+  );
+}
+
+function CompactNavItem({ icon, label, active, onClick, dim, locked, small }) {
+  return (
+    <button onClick={onClick} disabled={locked}
+      title={label}
+      style={{ ...styles.compactNavItem, ...(small ? styles.compactNavItemSmall : {}),
+        ...(active ? styles.compactNavItemActive : {}),
+        ...(dim && !active ? { opacity: 0.65 } : {}),
+        ...(locked ? { cursor: "default", opacity: 0.4 } : {}) }}>
+      <span>{locked ? "🔒" : icon}</span>
+    </button>
+  );
+}
+
+function AssignView({ config, monthState, updateMonthState, week, slot, team, year, month, locked }) {
+  if (!team) return null;
+  const setName = (roleId, value) => {
+    if (locked) return;
+    updateMonthState((prev) => {
+      const key = assignKey(week, slot, team.id, roleId);
+      const nextAssignments = { ...prev.assignments };
+      if (norm(value)) nextAssignments[key] = value;
+      else delete nextAssignments[key];
+      return { ...prev, assignments: nextAssignments };
+    });
+  };
+  const setVerse = (roleId, value) => {
+    if (locked) return;
+    updateMonthState((prev) => {
+      const key = assignKey(week, slot, team.id, roleId);
+      const nextVerses = { ...(prev.verses || {}) };
+      if (norm(value)) nextVerses[key] = value;
+      else delete nextVerses[key];
+      return { ...prev, verses: nextVerses };
+    });
+  };
+  return (
+    <div style={styles.viewWrap}>
+      <header style={styles.viewHeader}>
+        <h1 style={styles.h1}>{team.name}</h1>
+        <div style={styles.viewMeta}>
+          {weekDisplayLabel(week, monthState.weekLabels, year, month)} · {slot}
+          {team.flexible && <span style={styles.flexTag}>compatible with every team</span>}
+          {locked && <span style={styles.flexTag}>view only — you can only edit your ministry</span>}
+        </div>
+      </header>
+      <div style={styles.rolesCard}>
+        {team.roles.length === 0 && <div style={styles.emptyNote}>This team has no roles yet. Add some under Manage teams.</div>}
+        {team.roles.map((role, i) => {
+          const key = assignKey(week, slot, team.id, role.id);
+          const value = monthState.assignments[key] || "";
+          const verseValue = (monthState.verses && monthState.verses[key]) || "";
+          const issues = findIssues(config, monthState, week, slot, team.id, role.id, value);
+          const hasConflict = issues.some((x) => x.type === "conflict");
+          const hasDup = issues.some((x) => x.type === "duplicate");
+          return (
+            <div key={role.id} style={{ ...styles.roleRow, borderTop: i === 0 ? "none" : "1px solid #E4DCC6" }}>
+              <div style={styles.roleName}>{role.name}</div>
+              <div style={styles.roleInputWrap}>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <input value={value} onChange={(e) => setName(role.id, e.target.value)}
+                    placeholder="Volunteer name" readOnly={locked}
+                    style={{ ...styles.input, flex: 1, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }} />
+                  {role.hasVerse && (
+                    <input value={verseValue} onChange={(e) => setVerse(role.id, e.target.value)}
+                      placeholder="Verse (e.g. James 2:14-17)" readOnly={locked}
+                      style={{ ...styles.input, flex: 1, ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }} />
+                  )}
+                </div>
+                {issues.length > 0 && (
+                  <div style={{ ...styles.issueNote, color: hasConflict ? "#8C2F22" : "#8A6A1A" }}>
+                    {issues.map((iss, idx) => (
+                      <div key={idx}>
+                        {iss.type === "conflict" ? `Also booked for ${iss.team.name} — ${iss.role.name}` : `Also serving as ${iss.role.name} on this team`}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ServiceInfoView({ monthState, updateMonthState, week, slot, year, month, locked }) {
+  const key = serviceInfoKey(week, slot);
+  const info = (monthState.serviceInfo && monthState.serviceInfo[key]) || { series: "", topic: "", verse: "", announcements: "", headcountVolunteer: "", headcountAdult: "", headcountKids: "" };
+
+  const setField = (field, value) => {
+    if (locked) return;
+    updateMonthState((prev) => ({
+      ...prev,
+      serviceInfo: {
+        ...(prev.serviceInfo || {}),
+        [key]: { ...info, [field]: value },
+      },
+    }));
+  };
+
+  const lockedStyle = locked ? { background: "#F3EFE2", cursor: "default" } : {};
+
+  return (
+    <div style={styles.viewWrap}>
+      <header style={styles.viewHeader}>
+        <h1 style={styles.h1}>Service Details</h1>
+        <div style={styles.viewMeta}>
+          {weekDisplayLabel(week, monthState.weekLabels, year, month)} · {slot}
+          {locked && <span style={styles.flexTag}>view only — only Service Lead editors can change this</span>}
+        </div>
+      </header>
+      <div style={styles.rolesCard}>
+        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <div style={styles.fieldLabel}>Series Name</div>
+            <input value={info.series || ""} onChange={(e) => setField("series", e.target.value)}
+              placeholder="e.g. Rooted" readOnly={locked} style={{ ...styles.input, ...lockedStyle }} />
+          </div>
+          <div>
+            <div style={styles.fieldLabel}>Topic</div>
+            <input value={info.topic || ""} onChange={(e) => setField("topic", e.target.value)}
+              placeholder="e.g. Faith that acts" readOnly={locked} style={{ ...styles.input, ...lockedStyle }} />
+          </div>
+          <div>
+            <div style={styles.fieldLabel}>Verse</div>
+            <input value={info.verse || ""} onChange={(e) => setField("verse", e.target.value)}
+              placeholder="e.g. James 2:14-17" readOnly={locked} style={{ ...styles.input, ...lockedStyle }} />
+          </div>
+          <div>
+            <div style={styles.fieldLabel}>Announcements</div>
+            <textarea value={info.announcements || ""} onChange={(e) => setField("announcements", e.target.value)}
+              placeholder="Anything to announce this service…" rows={5} readOnly={locked}
+              style={{ ...styles.input, ...lockedStyle, resize: "vertical", fontFamily: "system-ui, sans-serif" }} />
+          </div>
+          <div>
+            <div style={styles.fieldLabel}>Head count (for the print sheet)</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11.5, color: "#8A7F5E", marginBottom: 4, fontFamily: "system-ui, sans-serif" }}>Volunteers</div>
+                <input value={info.headcountVolunteer || ""} onChange={(e) => setField("headcountVolunteer", e.target.value)}
+                  inputMode="numeric" readOnly={locked} style={{ ...styles.input, ...lockedStyle }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11.5, color: "#8A7F5E", marginBottom: 4, fontFamily: "system-ui, sans-serif" }}>Adults</div>
+                <input value={info.headcountAdult || ""} onChange={(e) => setField("headcountAdult", e.target.value)}
+                  inputMode="numeric" readOnly={locked} style={{ ...styles.input, ...lockedStyle }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11.5, color: "#8A7F5E", marginBottom: 4, fontFamily: "system-ui, sans-serif" }}>Kids</div>
+                <input value={info.headcountKids || ""} onChange={(e) => setField("headcountKids", e.target.value)}
+                  inputMode="numeric" readOnly={locked} style={{ ...styles.input, ...lockedStyle }} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MasterListView({ config, monthState, updateMonthState, week, slot, year, month }) {
+  const [view, setView] = useState("list");
+  const rows = [];
+  config.teams.forEach((team) => {
+    team.roles.forEach((role) => {
+      const key = assignKey(week, slot, team.id, role.id);
+      const name = monthState.assignments[key] || "";
+      const verse = (monthState.verses && monthState.verses[key]) || "";
+      const checked = !!(monthState.checks && monthState.checks[key]);
+      const issues = name ? findIssues(config, monthState, week, slot, team.id, role.id, name) : [];
+      rows.push({ key, team, role, name, verse, checked, issues });
+    });
+  });
+  const filled = rows.filter((r) => r.name).length;
+  const infoKey = serviceInfoKey(week, slot);
+  const info = (monthState.serviceInfo && monthState.serviceInfo[infoKey]) || {};
+  const printSettings = config.printSettings || {};
+  const dateLabel = weekDisplayLabel(week, monthState.weekLabels, year, month);
+
+  const toggleCheck = (key) => {
+    updateMonthState((prev) => {
+      const nextChecks = { ...(prev.checks || {}) };
+      if (nextChecks[key]) delete nextChecks[key];
+      else nextChecks[key] = true;
+      return { ...prev, checks: nextChecks };
+    });
+  };
+
+  if (view === "print") {
+    const total = [info.headcountVolunteer, info.headcountAdult, info.headcountKids]
+      .map((v) => parseInt(v, 10))
+      .filter((n) => !isNaN(n))
+      .reduce((a, b) => a + b, 0);
+    const program = config.printProgram || defaultPrintProgram();
+    const timeOffset = slotOffsetMinutes(slot);
+
+    const setCustomValue = (rowId, value) => {
+      updateMonthState((prev) => {
+        const next = { ...(prev.customValues || {}) };
+        const cvKey = `${week}|${slot}|${rowId}`;
+        if (norm(value)) next[cvKey] = value;
+        else delete next[cvKey];
+        return { ...prev, customValues: next };
+      });
+    };
+
+    const VolunteerCell = ({ row }) => {
+      const r = resolvePrintRow(config, monthState, week, slot, row);
+      const hasConflict = r.issues.some((x) => x.type === "conflict");
+      const hasDup = r.issues.some((x) => x.type === "duplicate");
+      if (r.editable) {
+        return (
+          <input className="no-print-interactive" value={r.value} onChange={(e) => setCustomValue(row.id, e.target.value)}
+            placeholder="—" style={{ width: "100%", boxSizing: "border-box", border: "none", background: "transparent", fontSize: 11.5, fontFamily: "system-ui, sans-serif", outline: "none" }} />
+        );
+      }
+      return (
+        <span style={{ color: hasConflict ? "#8C2F22" : hasDup ? "#8A6A1A" : "inherit", fontWeight: hasConflict || hasDup ? 700 : 400 }}>
+          {r.value || ""}
+        </span>
+      );
+    };
+
+    return (
+      <div className="print-sheet-wrap" style={styles.viewWrap}>
+        <div className="no-print" style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+          <button onClick={() => setView("list")} style={styles.smallBtn}>← Back to list view</button>
+          <button onClick={() => window.print()} style={{ ...styles.smallBtn, background: "#A9782F" }}>🖨 Print</button>
+        </div>
+        <div className="print-sheet" style={styles.sheet}>
+          <div style={styles.sheetBannerMain}>{printSettings.churchName || "VICTORY ALFONSO CHURCH SUNDAY SERVICE"}</div>
+          <div style={styles.sheetBannerSub}>
+            {[printSettings.campus || "VICTORY ALFONSO", printSettings.callTime && `CALLTIME: ${printSettings.callTime}`, `SERVICE TIME: ${slot}`].filter(Boolean).join(" | ")}
+          </div>
+          {info.series && <div style={styles.sheetBannerBold}>{info.series.toUpperCase()}</div>}
+          {(info.topic || info.verse) && <div style={styles.sheetBannerLight}>{[info.topic, info.verse].filter(Boolean).join("   ")}</div>}
+          <div style={styles.sheetBannerSub}>{dateLabel}</div>
+
+          <table style={styles.sheetTable}>
+            <thead>
+              <tr>
+                <th style={styles.sheetTh}>Time</th>
+                <th style={styles.sheetTh}>Duration</th>
+                <th style={styles.sheetTh}>Program</th>
+                <th style={styles.sheetTh}>Task</th>
+                <th style={styles.sheetTh}>Volunteer(s)</th>
+                <th style={{ ...styles.sheetTh, width: 26 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {program.sections.map((section) => {
+                if (section.kind === "divider") {
+                  return (
+                    <tr key={section.id}>
+                      <td style={styles.sheetTd}>{shiftTimeText(section.time, timeOffset)}</td>
+                      <td colSpan={5} style={styles.sheetBand}>{shiftDividerLabel(section.label, slot)}</td>
+                    </tr>
+                  );
+                }
+                const visibleRows = section.rows.filter((row) => rowVisibleForWeek(row, week));
+                if (visibleRows.length === 0) return null;
+                const extraLines = (section.programSubRoles || [])
+                  .map((tag) => resolveRoleTagValue(config, monthState, week, slot, tag))
+                  .filter((v) => norm(v));
+                return visibleRows.map((row, i) => {
+                  const timing = resolveRowTiming(row, week, slot, timeOffset);
+                  return (
+                  <tr key={row.id}>
+                    <td style={styles.sheetTd}>{timing.time}</td>
+                    <td style={styles.sheetTd}>{timing.duration}</td>
+                    {i === 0 && (
+                      <td rowSpan={visibleRows.length} style={{ ...styles.sheetTd, fontWeight: 700, verticalAlign: "middle", whiteSpace: "pre-wrap" }}>
+                        {section.program || ""}
+                        {extraLines.length > 0 && (
+                          <div style={{ fontWeight: 400, fontSize: 10.5, marginTop: 4 }}>
+                            {extraLines.map((v, idx) => <div key={idx}>{v}</div>)}
+                          </div>
+                        )}
+                      </td>
+                    )}
+                    <td style={styles.sheetTd}>{row.task || ""}</td>
+                    <td style={styles.sheetTd}><VolunteerCell row={row} /></td>
+                    <td style={{ ...styles.sheetTd, textAlign: "center" }}>
+                      {row.checkbox && (
+                        <input className="no-print-interactive" type="checkbox" checked={!!(monthState.checks && monthState.checks[`custom:${row.id}`])}
+                          onChange={() => toggleCheck(`custom:${row.id}`)} />
+                      )}
+                    </td>
+                  </tr>
+                  );
+                });
+              })}
+            </tbody>
+          </table>
+
+          {(program.sideBlocks || []).length > 0 && (
+            <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+              {program.sideBlocks.map((block) => (
+                <div key={block.id} style={{ flex: "1 1 260px", minWidth: 240 }}>
+                  <div style={styles.sheetSectionHead}>{block.title}</div>
+                  <table style={styles.sheetTable}>
+                    <tbody>
+                      {block.rows.map((row) => (
+                        <tr key={row.id}>
+                          <td style={styles.sheetTd}>{row.label}</td>
+                          <td style={styles.sheetTd}><VolunteerCell row={row} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+            {(program.soloRows || []).length > 0 && (
+              <div style={{ flex: "0 0 220px" }}>
+                <table style={styles.sheetTable}>
+                  <tbody>
+                    {program.soloRows.map((row) => (
+                      <tr key={row.id}>
+                        <td style={{ ...styles.sheetTd, background: "#1F3864", color: "#FFFFFF", fontWeight: 700 }}>{row.label.toUpperCase()}</td>
+                        <td style={styles.sheetTd}><VolunteerCell row={row} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ flex: "1 1 260px" }}>
+              <div style={styles.sheetSectionHead}>ANNOUNCEMENTS</div>
+              <div style={{ border: "1px solid #23211D", borderTop: "none", padding: "8px 10px", fontSize: 12.5, whiteSpace: "pre-wrap", minHeight: 30 }}>{info.announcements || ""}</div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, maxWidth: 320 }}>
+            <div style={styles.sheetSectionHead}>HEAD COUNT</div>
+            <table style={styles.sheetTable}>
+              <tbody>
+                <tr><td style={styles.sheetTd}>Volunteer</td><td style={{ ...styles.sheetTd, width: 80 }}>{info.headcountVolunteer || ""}</td></tr>
+                <tr><td style={styles.sheetTd}>Adult</td><td style={styles.sheetTd}>{info.headcountAdult || ""}</td></tr>
+                <tr><td style={styles.sheetTd}>Kids</td><td style={styles.sheetTd}>{info.headcountKids || ""}</td></tr>
+                <tr><td style={{ ...styles.sheetTd, fontWeight: 700 }}>Total</td><td style={{ ...styles.sheetTd, fontWeight: 700 }}>{total || ""}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.viewWrap}>
+      <header style={styles.viewHeader}>
+        <h1 style={styles.h1}>Master List</h1>
+        <div style={styles.viewMeta}>{dateLabel} · {slot} · {filled} of {rows.length} roles filled</div>
+      </header>
+      <div style={{ marginBottom: 16 }}>
+        <button onClick={() => setView("print")} style={styles.smallBtn}>🖨 Print-friendly run sheet</button>
+      </div>
+      {(info.series || info.topic || info.verse || info.announcements) && (
+        <div style={styles.masterCard}>
+          <div style={{ padding: "14px 18px", fontFamily: "system-ui, sans-serif", fontSize: 13.5, display: "flex", flexDirection: "column", gap: 4 }}>
+            {info.series && <div><strong>Series:</strong> {info.series}</div>}
+            {info.topic && <div><strong>Topic:</strong> {info.topic}</div>}
+            {info.verse && <div><strong>Verse:</strong> {info.verse}</div>}
+            {info.announcements && <div><strong>Announcements:</strong> {info.announcements}</div>}
+          </div>
+        </div>
+      )}
+      <div style={{ ...styles.masterCard, marginTop: (info.series || info.topic || info.verse || info.announcements) ? 16 : 0 }}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Team</th>
+              <th style={styles.th}>Role</th>
+              <th style={styles.th}>Volunteer</th>
+              <th style={styles.th}>Verse</th>
+              <th style={styles.th}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, idx) => {
+              const hasConflict = r.issues.some((x) => x.type === "conflict");
+              const hasDup = r.issues.some((x) => x.type === "duplicate");
+              return (
+                <tr key={idx} style={{ background: hasConflict ? "#FBE9E5" : hasDup ? "#FBF3DC" : idx % 2 === 0 ? "#FFFFFF" : "#FAF6EA" }}>
+                  <td style={styles.td}>{r.team.name}</td>
+                  <td style={styles.td}>{r.role.name}</td>
+                  <td style={{ ...styles.td, fontWeight: r.name ? 600 : 400 }}>{r.name || <span style={styles.tdMuted}>— open —</span>}</td>
+                  <td style={styles.td}>{r.role.hasVerse ? (r.verse || <span style={styles.tdMuted}>—</span>) : <span style={styles.tdMuted}>—</span>}</td>
+                  <td style={styles.td}>
+                    {hasConflict ? <span style={styles.badgeConflict}>Double-booked</span>
+                      : hasDup ? <span style={styles.badgeDup}>Also on this team</span>
+                      : r.name ? <span style={styles.badgeOk}>Confirmed</span>
+                      : <span style={styles.tdMuted}>—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ManageView({ config, updateConfig, monthState, updateMonthState, monthLabelText }) {
+  const [newTeamName, setNewTeamName] = useState("");
+  const [newRoleName, setNewRoleName] = useState({});
+  const [restrictName, setRestrictName] = useState("");
+  const [restrictTeamIds, setRestrictTeamIds] = useState([]);
+  const [restrictCanManage, setRestrictCanManage] = useState(false);
+  const [role1, setRole1] = useState("");
+  const [role2, setRole2] = useState("");
+  const [role3, setRole3] = useState("");
+  const [role4, setRole4] = useState("");
+  const [overrideDraft, setOverrideDraft] = useState({});
+
+  const printSettings = config.printSettings || {};
+  const setPrintSetting = (field, value) => {
+    updateConfig((prev) => ({ ...prev, printSettings: { ...(prev.printSettings || {}), [field]: value } }));
+  };
+
+  const allRoleOptions = config.teams.flatMap((t) =>
+    t.roles.map((r) => ({ tag: roleTag(t.id, r.id), label: `${t.name} — ${r.name}` }))
+  );
+  const addGroup = () => {
+    const picked = [role1, role2, role3, role4].filter(Boolean);
+    const unique = Array.from(new Set(picked));
+    if (unique.length < 2) return;
+    updateConfig((prev) => ({ ...prev, compatibleGroups: [...(prev.compatibleGroups || []), unique] }));
+    setRole1(""); setRole2(""); setRole3(""); setRole4("");
+  };
+  const removeGroup = (idx) => {
+    updateConfig((prev) => ({ ...prev, compatibleGroups: (prev.compatibleGroups || []).filter((_, i) => i !== idx) }));
+  };
+
+  const addTeam = () => {
+    const name = norm(newTeamName);
+    if (!name) return;
+    updateConfig((prev) => ({ ...prev, teams: [...prev.teams, { id: uid(), name, flexible: false, roles: [] }] }));
+    setNewTeamName("");
+  };
+  const removeTeam = (teamId) => {
+    updateConfig((prev) => ({
+      ...prev,
+      teams: prev.teams.filter((t) => t.id !== teamId),
+      compatiblePairs: prev.compatiblePairs.filter((p) => !p.split("~").includes(teamId)),
+    }));
+  };
+  const renameTeam = (teamId, name) => {
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, name } : t)) }));
+  };
+  const toggleFlexible = (teamId) => {
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, flexible: !t.flexible } : t)) }));
+  };
+  const addRole = (teamId) => {
+    const name = norm(newRoleName[teamId]);
+    if (!name) return;
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: [...t.roles, { id: uid(), name }] } : t)) }));
+    setNewRoleName((prev) => ({ ...prev, [teamId]: "" }));
+  };
+  const removeRole = (teamId, roleId) => {
+    updateConfig((prev) => ({
+      ...prev,
+      teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.filter((r) => r.id !== roleId) } : t)),
+    }));
+  };
+  const renameRole = (teamId, roleId, name) => {
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.map((r) => (r.id === roleId ? { ...r, name } : r)) } : t)) }));
+  };
+  const toggleRoleVerse = (teamId, roleId) => {
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.map((r) => (r.id === roleId ? { ...r, hasVerse: !r.hasVerse } : r)) } : t)) }));
+  };
+  const setRoleField = (teamId, roleId, field, value) => {
+    updateConfig((prev) => ({ ...prev, teams: prev.teams.map((t) => (t.id === teamId ? { ...t, roles: t.roles.map((r) => (r.id === roleId ? { ...r, [field]: value } : r)) } : t)) }));
+  };
+  const togglePair = (aId, bId) => {
+    const key = pairKey(aId, bId);
+    updateConfig((prev) => ({ ...prev, compatiblePairs: prev.compatiblePairs.includes(key) ? prev.compatiblePairs.filter((p) => p !== key) : [...prev.compatiblePairs, key] }));
+  };
+  const setWeekLabel = (week, label) => {
+    updateMonthState((prev) => ({ ...prev, weekLabels: { ...prev.weekLabels, [week]: label } }));
+  };
+  const toggleRestrictTeamId = (teamId) => {
+    setRestrictTeamIds((prev) => (prev.includes(teamId) ? prev.filter((id) => id !== teamId) : [...prev, teamId]));
+  };
+  const addRestriction = () => {
+    const name = normKey(restrictName);
+    if (!name || restrictTeamIds.length === 0) return;
+    updateConfig((prev) => ({ ...prev, restrictions: { ...(prev.restrictions || {}), [name]: { teams: restrictTeamIds, canManage: restrictCanManage } } }));
+    setRestrictName("");
+    setRestrictTeamIds([]);
+    setRestrictCanManage(false);
+  };
+  const editRestriction = (name, entry) => {
+    setRestrictName(name);
+    setRestrictTeamIds(entry.teams);
+    setRestrictCanManage(entry.canManage);
+  };
+  const removeRestriction = (name) => {
+    updateConfig((prev) => {
+      const next = { ...(prev.restrictions || {}) };
+      delete next[name];
+      return { ...prev, restrictions: next };
+    });
+  };
+
+  const rigidTeams = config.teams.filter((t) => !t.flexible);
+  const restrictionEntries = Object.entries(config.restrictions || {});
+
+  // ---- Print Program (run sheet layout) editing ----
+  const program = config.printProgram || defaultPrintProgram();
+  const updateProgram = (updater) => {
+    updateConfig((prev) => {
+      const cur = prev.printProgram || defaultPrintProgram();
+      const next = typeof updater === "function" ? updater(cur) : updater;
+      return { ...prev, printProgram: next };
+    });
+  };
+  const moveInArray = (arr, idx, dir) => {
+    const next = arr.slice();
+    const j = idx + dir;
+    if (j < 0 || j >= next.length) return arr;
+    [next[idx], next[j]] = [next[j], next[idx]];
+    return next;
+  };
+  const addSection = (kind) => {
+    updateProgram((p) => ({
+      ...p,
+      sections: [...p.sections, kind === "divider"
+        ? { id: uid(), kind: "divider", label: "NEW DIVIDER" }
+        : { id: uid(), kind: "group", program: "", rows: [{ id: uid(), time: "", duration: "", task: "New task" }] }],
+    }));
+  };
+  const removeSection = (id) => updateProgram((p) => ({ ...p, sections: p.sections.filter((s) => s.id !== id) }));
+  const moveSection = (id, dir) => updateProgram((p) => ({ ...p, sections: moveInArray(p.sections, p.sections.findIndex((s) => s.id === id), dir) }));
+  const updateSection = (id, field, value) => updateProgram((p) => ({ ...p, sections: p.sections.map((s) => (s.id === id ? { ...s, [field]: value } : s)) }));
+  const addRow = (sectionId) => updateProgram((p) => ({ ...p, sections: p.sections.map((s) => (s.id === sectionId ? { ...s, rows: [...s.rows, { id: uid(), time: "", duration: "", task: "New task" }] } : s)) }));
+  const removeRow = (sectionId, rowId) => updateProgram((p) => ({ ...p, sections: p.sections.map((s) => (s.id === sectionId ? { ...s, rows: s.rows.filter((r) => r.id !== rowId) } : s)) }));
+  const updateRow = (sectionId, rowId, field, value) => updateProgram((p) => ({ ...p, sections: p.sections.map((s) => (s.id === sectionId ? { ...s, rows: s.rows.map((r) => (r.id === rowId ? { ...r, [field]: value } : r)) } : s)) }));
+  const moveRowToSection = (fromSectionId, rowId, toSectionId) => {
+    if (fromSectionId === toSectionId) return;
+    updateProgram((p) => {
+      let movedRow = null;
+      const withoutRow = p.sections.map((s) => {
+        if (s.id === fromSectionId) {
+          movedRow = s.rows.find((r) => r.id === rowId);
+          return { ...s, rows: s.rows.filter((r) => r.id !== rowId) };
+        }
+        return s;
+      });
+      if (!movedRow) return p;
+      const withRow = withoutRow.map((s) => (s.id === toSectionId ? { ...s, rows: [...s.rows, movedRow] } : s));
+      return { ...p, sections: withRow };
+    });
+  };
+  const toggleRowWeek = (sectionId, rowId, row, w) => {
+    const cur = row.showWeeks && row.showWeeks.length ? row.showWeeks : WEEKS.slice();
+    const next = cur.includes(w) ? cur.filter((x) => x !== w) : [...cur, w].sort((a, b) => a - b);
+    updateRow(sectionId, rowId, "showWeeks", next.length === WEEKS.length ? null : next);
+  };
+  const addProgramSubRole = (sectionId, tag) => {
+    if (!tag) return;
+    updateProgram((p) => ({ ...p, sections: p.sections.map((s) => (s.id === sectionId ? { ...s, programSubRoles: [...(s.programSubRoles || []), tag] } : s)) }));
+  };
+  const removeProgramSubRole = (sectionId, tag) => {
+    updateProgram((p) => ({ ...p, sections: p.sections.map((s) => (s.id === sectionId ? { ...s, programSubRoles: (s.programSubRoles || []).filter((t) => t !== tag) } : s)) }));
+  };
+
+  // ---- Per-week/slot Time & Duration overrides for a print-program row ----
+  const getOverrideDraft = (rowId) => overrideDraft[rowId] || { weeks: [], slots: [], time: "", duration: "" };
+  const setOverrideDraftField = (rowId, field, value) => {
+    setOverrideDraft((prev) => ({ ...prev, [rowId]: { ...getOverrideDraft(rowId), [field]: value } }));
+  };
+  const toggleOverrideDraftWeek = (rowId, w) => {
+    const cur = getOverrideDraft(rowId);
+    const weeks = cur.weeks.includes(w) ? cur.weeks.filter((x) => x !== w) : [...cur.weeks, w].sort((a, b) => a - b);
+    setOverrideDraftField(rowId, "weeks", weeks);
+  };
+  const toggleOverrideDraftSlot = (rowId, s) => {
+    const cur = getOverrideDraft(rowId);
+    const slots = cur.slots.includes(s) ? cur.slots.filter((x) => x !== s) : [...cur.slots, s];
+    setOverrideDraftField(rowId, "slots", slots);
+  };
+  const addRowOverride = (sectionId, rowId) => {
+    const d = getOverrideDraft(rowId);
+    if (!norm(d.time) && !norm(d.duration)) return;
+    if (d.weeks.length === 0 && d.slots.length === 0) return;
+    updateRow(sectionId, rowId, "overrides", [
+      ...(program.sections.find((s) => s.id === sectionId).rows.find((r) => r.id === rowId).overrides || []),
+      { id: uid(), weeks: d.weeks, slots: d.slots, time: norm(d.time), duration: norm(d.duration) },
+    ]);
+    setOverrideDraft((prev) => ({ ...prev, [rowId]: { weeks: [], slots: [], time: "", duration: "" } }));
+  };
+  const removeRowOverride = (sectionId, rowId, overrideId) => {
+    const row = program.sections.find((s) => s.id === sectionId).rows.find((r) => r.id === rowId);
+    updateRow(sectionId, rowId, "overrides", (row.overrides || []).filter((o) => o.id !== overrideId));
+  };
+
+  const addSideBlock = () => updateProgram((p) => ({ ...p, sideBlocks: [...(p.sideBlocks || []), { id: uid(), title: "NEW SECTION", rows: [{ id: uid(), label: "New row" }] }] }));
+  const removeSideBlock = (id) => updateProgram((p) => ({ ...p, sideBlocks: (p.sideBlocks || []).filter((b) => b.id !== id) }));
+  const updateSideBlockTitle = (id, title) => updateProgram((p) => ({ ...p, sideBlocks: (p.sideBlocks || []).map((b) => (b.id === id ? { ...b, title } : b)) }));
+  const addSideRow = (blockId) => updateProgram((p) => ({ ...p, sideBlocks: (p.sideBlocks || []).map((b) => (b.id === blockId ? { ...b, rows: [...b.rows, { id: uid(), label: "New row" }] } : b)) }));
+  const removeSideRow = (blockId, rowId) => updateProgram((p) => ({ ...p, sideBlocks: (p.sideBlocks || []).map((b) => (b.id === blockId ? { ...b, rows: b.rows.filter((r) => r.id !== rowId) } : b)) }));
+  const updateSideRow = (blockId, rowId, field, value) => updateProgram((p) => ({ ...p, sideBlocks: (p.sideBlocks || []).map((b) => (b.id === blockId ? { ...b, rows: b.rows.map((r) => (r.id === rowId ? { ...r, [field]: value } : r)) } : b)) }));
+
+  const addSoloRow = () => updateProgram((p) => ({ ...p, soloRows: [...(p.soloRows || []), { id: uid(), label: "New row" }] }));
+  const removeSoloRow = (id) => updateProgram((p) => ({ ...p, soloRows: (p.soloRows || []).filter((r) => r.id !== id) }));
+  const updateSoloRow = (id, field, value) => updateProgram((p) => ({ ...p, soloRows: (p.soloRows || []).map((r) => (r.id === id ? { ...r, [field]: value } : r)) }));
+
+  return (
+    <div style={styles.viewWrap}>
+      <header style={styles.viewHeader}>
+        <h1 style={styles.h1}>Manage Teams</h1>
+        <div style={styles.viewMeta}>Edit teams and roles, and decide which teams may share a volunteer at the same service.</div>
+      </header>
+      <div style={styles.manageGrid}>
+        {config.teams.map((team) => (
+          <div key={team.id} style={styles.teamCard}>
+            <div style={styles.teamCardHead}>
+              <input value={team.name} onChange={(e) => renameTeam(team.id, e.target.value)} style={styles.teamNameInput} />
+              <button onClick={() => removeTeam(team.id)} style={styles.linkDanger}>Remove team</button>
+            </div>
+            <label style={styles.flexToggle}>
+              <input type="checkbox" checked={!!team.flexible} onChange={() => toggleFlexible(team.id)} />
+              Compatible with every other team (like a TEAM JESUS PRAYER team)
+            </label>
+            <div style={styles.roleList}>
+              {team.roles.map((role) => (
+                <div key={role.id} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <div style={styles.roleEditRow}>
+                    <input value={role.name} onChange={(e) => renameRole(team.id, role.id, e.target.value)} style={styles.roleEditInput} />
+                    <button onClick={() => removeRole(team.id, role.id)} style={styles.iconDanger} aria-label="Remove role">×</button>
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "#8A7F5E", paddingLeft: 2 }}>
+                    <input type="checkbox" checked={!!role.hasVerse} onChange={() => toggleRoleVerse(team.id, role.id)} />
+                    Add a verse box next to this role
+                  </label>
+                  <div style={{ display: "flex", gap: 4, paddingLeft: 2 }}>
+                    <input value={role.time || ""} onChange={(e) => setRoleField(team.id, role.id, "time", e.target.value)}
+                      placeholder="Time (9:02)" style={{ ...styles.roleEditInput, fontSize: 11.5, padding: "5px 7px" }} />
+                    <input value={role.duration || ""} onChange={(e) => setRoleField(team.id, role.id, "duration", e.target.value)}
+                      placeholder="Duration (2 mins)" style={{ ...styles.roleEditInput, fontSize: 11.5, padding: "5px 7px" }} />
+                  </div>
+                  <input value={role.task || ""} onChange={(e) => setRoleField(team.id, role.id, "task", e.target.value)}
+                    placeholder="Task description for the print sheet (optional)"
+                    style={{ ...styles.roleEditInput, fontSize: 11.5, padding: "5px 7px", marginLeft: 2, marginRight: 2 }} />
+                </div>
+              ))}
+              <div style={styles.addRoleRow}>
+                <input value={newRoleName[team.id] || ""} onChange={(e) => setNewRoleName((prev) => ({ ...prev, [team.id]: e.target.value }))}
+                  placeholder="New role name" style={styles.roleEditInput}
+                  onKeyDown={(e) => { if (e.key === "Enter") addRole(team.id); }} />
+                <button onClick={() => addRole(team.id)} style={styles.smallBtn}>Add</button>
+              </div>
+            </div>
+          </div>
+        ))}
+        <div style={styles.newTeamCard}>
+          <div style={styles.newTeamLabel}>Add a new team</div>
+          <input value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} placeholder="e.g. Hospitality" style={styles.roleEditInput}
+            onKeyDown={(e) => { if (e.key === "Enter") addTeam(); }} />
+          <button onClick={addTeam} style={styles.smallBtn}>Add team</button>
+        </div>
+      </div>
+
+      {rigidTeams.length > 1 && (
+        <div style={{ marginTop: 28 }}>
+          <div style={styles.sectionLabel}>Allowed double-bookings (whole teams)</div>
+          <div style={styles.pairNote}>Check a pair if the same person is allowed to serve on both teams at the same service without being flagged.</div>
+          <div style={styles.pairGrid}>
+            {rigidTeams.map((a, i) => rigidTeams.slice(i + 1).map((b) => (
+              <label key={a.id + b.id} style={styles.pairItem}>
+                <input type="checkbox" checked={config.compatiblePairs.includes(pairKey(a.id, b.id))} onChange={() => togglePair(a.id, b.id)} />
+                {a.name} + {b.name}
+              </label>
+            )))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Allowed role combinations</div>
+        <div style={styles.pairNote}>
+          Piliin ang 2 hanggang 4 na roles na pwedeng hawakan ng iisang tao
+          nang sabay, nang hindi na-flag — kahit same team o cross-team pa ito.
+        </div>
+        <div style={styles.restrictAddRow}>
+          <select value={role1} onChange={(e) => setRole1(e.target.value)} style={styles.restrictSelect}>
+            <option value="">Role 1…</option>
+            {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+          </select>
+          <select value={role2} onChange={(e) => setRole2(e.target.value)} style={styles.restrictSelect}>
+            <option value="">Role 2…</option>
+            {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+          </select>
+          <select value={role3} onChange={(e) => setRole3(e.target.value)} style={styles.restrictSelect}>
+            <option value="">Role 3 (optional)…</option>
+            {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+          </select>
+          <select value={role4} onChange={(e) => setRole4(e.target.value)} style={styles.restrictSelect}>
+            <option value="">Role 4 (optional)…</option>
+            {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+          </select>
+          <button onClick={addGroup} style={styles.smallBtn}>Add group</button>
+        </div>
+        {(config.compatibleGroups || []).length > 0 && (
+          <div style={styles.restrictList}>
+            {(config.compatibleGroups || []).map((group, idx) => (
+              <div key={idx} style={styles.restrictRow}>
+                <span style={styles.restrictTeam}>
+                  {group.map((tag) => (allRoleOptions.find((r) => r.tag === tag) || {}).label || tag).join(" + ")}
+                </span>
+                <button onClick={() => removeGroup(idx)} style={styles.linkDanger}>Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Week dates — {monthLabelText}</div>
+        <div style={styles.pairNote}>Dates fill in automatically using each Sunday of the month shown above — you don't need to type anything here. Only fill in a week if that service falls on a different date (e.g. moved off Sunday), and it will override the automatic date for that week only. Switch months in the sidebar to set an override for a different month.</div>
+        <div style={styles.weekLabelGrid}>
+          {WEEKS.map((w) => (
+            <label key={w} style={styles.weekLabelItem}>
+              <span>Week {w}</span>
+              <input value={monthState.weekLabels[w] || ""} onChange={(e) => setWeekLabel(w, e.target.value)} placeholder="e.g. July 6, 2026" style={styles.weekLabelInput} />
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Print sheet header</div>
+        <div style={styles.pairNote}>These fill in the banner at the top of the printable run sheet (Master List → Print). Leave blank to use the defaults.</div>
+        <div style={styles.weekLabelGrid}>
+          <label style={styles.weekLabelItem}>
+            <span>Church / title line</span>
+            <input value={printSettings.churchName || ""} onChange={(e) => setPrintSetting("churchName", e.target.value)}
+              placeholder="VICTORY ALFONSO CHURCH SUNDAY SERVICE" style={styles.weekLabelInput} />
+          </label>
+          <label style={styles.weekLabelItem}>
+            <span>Campus / location name</span>
+            <input value={printSettings.campus || ""} onChange={(e) => setPrintSetting("campus", e.target.value)}
+              placeholder="VICTORY ALFONSO" style={styles.weekLabelInput} />
+          </label>
+          <label style={styles.weekLabelItem}>
+            <span>Call time</span>
+            <input value={printSettings.callTime || ""} onChange={(e) => setPrintSetting("callTime", e.target.value)}
+              placeholder="8:00 AM" style={styles.weekLabelInput} />
+          </label>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Print Program (run sheet layout)</div>
+        <div style={styles.pairNote}>
+          This is the exact flow printed on the Master List run sheet — separate from
+          Teams/Roles above. A row can link to an existing team/role (so it auto-fills
+          from Assign volunteers and flags conflicts), have fixed text that never changes
+          month to month, or be left blank so it's a free-text box people can fill in
+          directly on the print page. Use "Show on weeks" to limit a row to specific
+          service weeks (e.g. Communion on Week 1 only) — leave every week checked for
+          rows that should always appear. A program group's label can also show extra
+          lines pulled live from specific roles (e.g. song titles) via "Extra lines under
+          Program label" below. Use "Overrides" on a row to give it a different Time or
+          Duration on specific weeks and/or a specific service slot — e.g. Celebration
+          Song running 3 MINS on Week 1 but 5 MINS on Weeks 2-5, or a separate schedule
+          for a future 3:00 PM service.
+        </div>
+
+        {program.sections.map((section, sIdx) => (
+          <div key={section.id} style={{ ...styles.teamCard, marginBottom: 10 }}>
+            <div style={styles.teamCardHead}>
+              {section.kind === "divider" ? (
+                <input value={section.label} onChange={(e) => updateSection(section.id, "label", e.target.value)}
+                  style={styles.teamNameInput} placeholder="Divider label (e.g. START OF SERVICE)" />
+              ) : (
+                <input value={section.program} onChange={(e) => updateSection(section.id, "program", e.target.value)}
+                  style={styles.teamNameInput} placeholder="Program label (e.g. PRAISE AND WORSHIP) — optional" />
+              )}
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => moveSection(section.id, -1)} disabled={sIdx === 0} style={styles.linkDanger}>↑</button>
+                <button onClick={() => moveSection(section.id, 1)} disabled={sIdx === program.sections.length - 1} style={styles.linkDanger}>↓</button>
+                <button onClick={() => removeSection(section.id)} style={styles.linkDanger}>Remove</button>
+              </div>
+            </div>
+            {section.kind === "divider" ? (
+              <input value={section.time || ""} onChange={(e) => updateSection(section.id, "time", e.target.value)}
+                placeholder="Time shown next to this divider (optional)" style={{ ...styles.roleEditInput, maxWidth: 220 }} />
+            ) : (
+              <React.Fragment>
+                <div style={{ marginBottom: 10, paddingBottom: 10, borderBottom: "1px dashed #E4DCC6" }}>
+                  <div style={{ fontSize: 11.5, color: "#8A7F5E", marginBottom: 4 }}>
+                    Extra lines under Program label (optional) — pulls a role's live value, e.g. song titles under "PRAISE AND WORSHIP"
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                    {(section.programSubRoles || []).map((tag) => {
+                      const opt = allRoleOptions.find((r) => r.tag === tag);
+                      return (
+                        <span key={tag} style={{ background: "#EFE7D3", borderRadius: 20, padding: "3px 10px", fontSize: 11.5, display: "flex", alignItems: "center", gap: 6 }}>
+                          {opt ? opt.label : tag}
+                          <button onClick={() => removeProgramSubRole(section.id, tag)} style={{ border: "none", background: "none", color: "#A6402F", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0 }} aria-label="Remove">×</button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <select value="" onChange={(e) => { addProgramSubRole(section.id, e.target.value); e.target.value = ""; }}
+                    style={{ ...styles.restrictSelect, fontSize: 12.5 }}>
+                    <option value="">+ Add a role's value as an extra line…</option>
+                    {allRoleOptions.filter((r) => !(section.programSubRoles || []).includes(r.tag)).map((r) => (
+                      <option key={r.tag} value={r.tag}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {section.rows.map((row) => {
+                  const draft = getOverrideDraft(row.id);
+                  return (
+                  <div key={row.id} style={{ border: "1px solid #E4DCC6", borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input value={row.time || ""} onChange={(e) => updateRow(section.id, row.id, "time", e.target.value)}
+                        placeholder="Time" style={{ ...styles.roleEditInput, fontSize: 11.5, padding: "5px 7px" }} />
+                      <input value={row.duration || ""} onChange={(e) => updateRow(section.id, row.id, "duration", e.target.value)}
+                        placeholder="Duration" style={{ ...styles.roleEditInput, fontSize: 11.5, padding: "5px 7px" }} />
+                      <button onClick={() => removeRow(section.id, row.id)} style={styles.iconDanger} aria-label="Remove row">×</button>
+                    </div>
+                    <input value={row.task || ""} onChange={(e) => updateRow(section.id, row.id, "task", e.target.value)}
+                      placeholder="Task" style={{ ...styles.roleEditInput, fontSize: 12.5 }} />
+                    <select value={row.linkedRole || ""} onChange={(e) => updateRow(section.id, row.id, "linkedRole", e.target.value)}
+                      style={{ ...styles.restrictSelect, fontSize: 12.5 }}>
+                      <option value="">— free text / fixed —</option>
+                      {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+                    </select>
+                    {!row.linkedRole && (
+                      <input value={row.fixedText || ""} onChange={(e) => updateRow(section.id, row.id, "fixedText", e.target.value)}
+                        placeholder="Fixed text (e.g. ALL AVAILABLE USHERS) — leave blank for a free-text box" style={{ ...styles.roleEditInput, fontSize: 12.5 }} />
+                    )}
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "#8A7F5E" }}>
+                      <input type="checkbox" checked={!!row.checkbox} onChange={() => updateRow(section.id, row.id, "checkbox", !row.checkbox)} />
+                      Show a checkbox for this row
+                    </label>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", paddingTop: 2, borderTop: "1px dashed #E4DCC6" }}>
+                      <span style={{ fontSize: 11.5, color: "#8A7F5E" }}>Show on weeks:</span>
+                      {WEEKS.map((w) => (
+                        <label key={w} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11.5, color: "#8A7F5E" }}>
+                          <input type="checkbox"
+                            checked={!row.showWeeks || row.showWeeks.length === 0 || row.showWeeks.includes(w)}
+                            onChange={() => toggleRowWeek(section.id, row.id, row, w)} />
+                          {w}
+                        </label>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4, borderTop: "1px dashed #E4DCC6" }}>
+                      <span style={{ fontSize: 11.5, color: "#8A7F5E" }}>
+                        Overrides for specific weeks/slots (optional) — different Time or Duration on certain weeks, or a whole separate slot (e.g. future 3:00 PM):
+                      </span>
+                      {(row.overrides || []).length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {row.overrides.map((ov) => (
+                            <div key={ov.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, background: "#F6F1E4", borderRadius: 6, padding: "4px 8px" }}>
+                              <span style={{ flex: 1 }}>
+                                {(ov.weeks && ov.weeks.length ? `Wk ${ov.weeks.join(",")}` : "All weeks")}
+                                {" · "}
+                                {(ov.slots && ov.slots.length ? ov.slots.join(", ") : "All slots")}
+                                {" → "}
+                                {[ov.time, ov.duration].filter((v) => norm(v)).join(" / ") || "—"}
+                              </span>
+                              <button onClick={() => removeRowOverride(section.id, row.id, ov.id)} style={styles.iconDanger} aria-label="Remove override">×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                        <span style={{ fontSize: 11, color: "#8A7F5E" }}>Weeks:</span>
+                        {WEEKS.map((w) => (
+                          <label key={w} style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11, color: "#8A7F5E" }}>
+                            <input type="checkbox" checked={draft.weeks.includes(w)} onChange={() => toggleOverrideDraftWeek(row.id, w)} />
+                            {w}
+                          </label>
+                        ))}
+                        <span style={{ fontSize: 11, color: "#8A7F5E", marginLeft: 6 }}>Slots:</span>
+                        {SLOTS.map((s) => (
+                          <label key={s} style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11, color: "#8A7F5E" }}>
+                            <input type="checkbox" checked={draft.slots.includes(s)} onChange={() => toggleOverrideDraftSlot(row.id, s)} />
+                            {s}
+                          </label>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input value={draft.time} onChange={(e) => setOverrideDraftField(row.id, "time", e.target.value)}
+                          placeholder="Override time (optional)" style={{ ...styles.roleEditInput, fontSize: 11.5, padding: "5px 7px" }} />
+                        <input value={draft.duration} onChange={(e) => setOverrideDraftField(row.id, "duration", e.target.value)}
+                          placeholder="Override duration (optional)" style={{ ...styles.roleEditInput, fontSize: 11.5, padding: "5px 7px" }} />
+                        <button onClick={() => addRowOverride(section.id, row.id)} style={styles.smallBtn}>Add override</button>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", paddingTop: 2, borderTop: "1px dashed #E4DCC6" }}>
+                      <span style={{ fontSize: 11.5, color: "#8A7F5E" }}>Move to section:</span>
+                      <select value="" onChange={(e) => { if (e.target.value) moveRowToSection(section.id, row.id, e.target.value); }}
+                        style={{ ...styles.restrictSelect, fontSize: 11.5, padding: "4px 6px" }}>
+                        <option value="">— choose a group —</option>
+                        {program.sections.filter((s) => s.kind === "group" && s.id !== section.id).map((s) => (
+                          <option key={s.id} value={s.id}>{s.program || "(untitled group)"}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  );
+                })}
+                <button onClick={() => addRow(section.id)} style={styles.smallBtn}>Add row</button>
+                </div>
+              </React.Fragment>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+          <button onClick={() => addSection("group")} style={styles.smallBtn}>Add program group</button>
+          <button onClick={() => addSection("divider")} style={styles.smallBtn}>Add divider</button>
+        </div>
+
+        <div style={{ ...styles.sectionLabel, marginTop: 24 }}>Side-by-side sections (e.g. Kids Coaches, Ushering)</div>
+        <div style={styles.manageGrid}>
+          {(program.sideBlocks || []).map((block) => (
+            <div key={block.id} style={styles.teamCard}>
+              <div style={styles.teamCardHead}>
+                <input value={block.title} onChange={(e) => updateSideBlockTitle(block.id, e.target.value)} style={styles.teamNameInput} />
+                <button onClick={() => removeSideBlock(block.id)} style={styles.linkDanger}>Remove</button>
+              </div>
+              <div style={styles.roleList}>
+                {block.rows.map((row) => (
+                  <div key={row.id} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    <div style={styles.roleEditRow}>
+                      <input value={row.label} onChange={(e) => updateSideRow(block.id, row.id, "label", e.target.value)} style={styles.roleEditInput} />
+                      <button onClick={() => removeSideRow(block.id, row.id)} style={styles.iconDanger} aria-label="Remove row">×</button>
+                    </div>
+                    <select value={row.linkedRole || ""} onChange={(e) => updateSideRow(block.id, row.id, "linkedRole", e.target.value)}
+                      style={{ ...styles.restrictSelect, fontSize: 12 }}>
+                      <option value="">— free text —</option>
+                      {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+                    </select>
+                  </div>
+                ))}
+                <button onClick={() => addSideRow(block.id)} style={styles.smallBtn}>Add row</button>
+              </div>
+            </div>
+          ))}
+          <div style={styles.newTeamCard}>
+            <div style={styles.newTeamLabel}>Add a side-by-side section</div>
+            <button onClick={addSideBlock} style={styles.smallBtn}>Add section</button>
+          </div>
+        </div>
+
+        <div style={{ ...styles.sectionLabel, marginTop: 24 }}>Small label/value rows (e.g. Admin, Tech, Photographer)</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 420 }}>
+          {(program.soloRows || []).map((row) => (
+            <div key={row.id} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input value={row.label} onChange={(e) => updateSoloRow(row.id, "label", e.target.value)} style={{ ...styles.roleEditInput, maxWidth: 140 }} />
+              <select value={row.linkedRole || ""} onChange={(e) => updateSoloRow(row.id, "linkedRole", e.target.value)}
+                style={{ ...styles.restrictSelect, fontSize: 12, flex: 1 }}>
+                <option value="">— free text —</option>
+                {allRoleOptions.map((r) => <option key={r.tag} value={r.tag}>{r.label}</option>)}
+              </select>
+              <button onClick={() => removeSoloRow(row.id)} style={styles.iconDanger} aria-label="Remove row">×</button>
+            </div>
+          ))}
+          <button onClick={addSoloRow} style={styles.smallBtn}>Add row</button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <div style={styles.sectionLabel}>Editors list</div>
+        <div style={styles.pairNote}>
+          Type the exact name a person enters on the "Who's this?" screen and check every
+          ministry they're allowed to edit — one or several. Editing Service Details also
+          requires the Service Lead ministry to be checked, and Manage Teams requires the
+          "can also open Manage Teams" box below. Anyone whose name is NOT on this list
+          cannot edit anything, and cannot open Manage Teams — the app is view only for them
+          until they're added. Make sure at least one name here always has "can manage
+          teams" checked, or no one will be able to get back into this screen. This applies
+          across every month.
+        </div>
+        <div style={styles.restrictAddRow}>
+          <input value={restrictName} onChange={(e) => setRestrictName(e.target.value)}
+            placeholder="Name (as they'll type it)" style={styles.roleEditInput}
+            onKeyDown={(e) => { if (e.key === "Enter") addRestriction(); }} />
+        </div>
+        <div style={styles.pairGrid}>
+          {config.teams.map((t) => (
+            <label key={t.id} style={styles.pairItem}>
+              <input type="checkbox" checked={restrictTeamIds.includes(t.id)} onChange={() => toggleRestrictTeamId(t.id)} />
+              {t.name}
+            </label>
+          ))}
+        </div>
+        <label style={{ ...styles.flexToggle, marginTop: 10 }}>
+          <input type="checkbox" checked={restrictCanManage} onChange={() => setRestrictCanManage((v) => !v)} />
+          Can also open Manage Teams (add/rename teams and roles, edit this editors list)
+        </label>
+        <div style={{ marginTop: 10 }}>
+          <button onClick={addRestriction} style={styles.smallBtn}>Save editor</button>
+        </div>
+        {restrictionEntries.length > 0 && (
+          <div style={styles.restrictList}>
+            {restrictionEntries.map(([name, raw]) => {
+              const entry = normalizeRestriction(raw);
+              const teamNames = entry.teams
+                .map((id) => (config.teams.find((t) => t.id === id) || {}).name || "(deleted team)")
+                .join(", ");
+              return (
+                <div key={name} style={styles.restrictRow}>
+                  <span style={styles.restrictName}>{name}</span>
+                  <span style={styles.restrictTeam}>
+                    can edit: {teamNames || "(none yet)"}{entry.canManage ? " · can manage teams" : ""}
+                  </span>
+                  <button onClick={() => editRestriction(name, entry)} style={styles.linkDanger}>Edit</button>
+                  <button onClick={() => removeRestriction(name)} style={styles.linkDanger}>Remove</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  watermark: { position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 9999, opacity: 0.2 },
+  watermarkImg: { width: "45%", maxWidth: 480, objectFit: "contain" },
+  app: { display: "flex", minHeight: "100vh", background: "#F6F1E4", color: "#2A2620", fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif' },
+  setupScreen: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F6F1E4", padding: 24 },
+  setupCard: { maxWidth: 520, background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 12, padding: 32 },
+  setupText: { fontFamily: "system-ui, sans-serif", fontSize: 14.5, lineHeight: 1.7, color: "#4A4230" },
+  code: { background: "#EFE7D3", padding: "1px 6px", borderRadius: 4, fontSize: 13 },
+  sidebar: { width: 260, flexShrink: 0, background: "#23211D", color: "#EFE7D3", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "24px 18px", boxSizing: "border-box" },
+  sidebarCompact: { width: 64, flexShrink: 0, background: "#23211D", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "16px 6px", boxSizing: "border-box", minHeight: "100vh" },
+  compactBrandMark: { width: 30, height: 30, borderRadius: 7, objectFit: "cover", marginBottom: 6 },
+  compactNavList: { display: "flex", flexDirection: "column", gap: 6, width: "100%", alignItems: "center" },
+  compactNavItem: { width: 46, height: 46, borderRadius: 10, border: "none", background: "transparent", color: "#EFE7D3", fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  compactNavItemSmall: { width: 40, height: 32, borderRadius: 8, fontSize: 11, fontFamily: "system-ui, sans-serif", fontWeight: 700, color: "#CFC49E", background: "#2B2820" },
+  compactNavItemActive: { background: "#332F27", color: "#F3ECD8" },
+  compactDivider: { width: "70%", height: 1, background: "#3B3830", margin: "6px 0" },
+  compactSwitchUser: { marginTop: "auto", width: 36, height: 36, borderRadius: "50%", border: "1px solid #3B3830", background: "#2B2820", color: "#D9CFAF", fontSize: 12, fontWeight: 700, fontFamily: "system-ui, sans-serif", cursor: "pointer", flexShrink: 0 },
+  mainMobile: { padding: "18px 16px" },
+  mobileControls: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 10, padding: "10px 12px", marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 },
+  mobileControlsRow: { display: "flex", alignItems: "center", gap: 8, overflowX: "auto" },
+  mobileMonthNav: { display: "flex", alignItems: "center", gap: 4, background: "#F6F1E4", border: "1px solid #E4DCC6", borderRadius: 6, padding: "3px 6px", flexShrink: 0 },
+  mobileMonthLabel: { fontFamily: "system-ui, sans-serif", fontSize: 12.5, fontWeight: 600, color: "#4A4230", whiteSpace: "nowrap", padding: "0 2px" },
+  mobilePresencePill: { fontFamily: "system-ui, sans-serif", fontSize: 11.5, color: "#5C5230", background: "#EFE7D3", borderRadius: 20, padding: "5px 10px", whiteSpace: "nowrap", flexShrink: 0 },
+  mobileWeekBtn: { width: 30, height: 30, flexShrink: 0, borderRadius: 6, border: "1px solid #D8CFB0", background: "#F6F1E4", color: "#4A4230", cursor: "pointer", fontFamily: "system-ui, sans-serif", fontSize: 12.5 },
+  mobileSlotBtn: { padding: "6px 10px", flexShrink: 0, borderRadius: 6, border: "1px solid #D8CFB0", background: "#F6F1E4", color: "#4A4230", cursor: "pointer", fontFamily: "system-ui, sans-serif", fontSize: 12 },
+  mobileWeekDate: { fontSize: 11.5, color: "#8A7F5E", fontFamily: "system-ui, sans-serif" },
+  brand: { display: "flex", alignItems: "center", gap: 10, marginBottom: 26 },
+  brandMark: { width: 34, height: 34, borderRadius: 6, objectFit: "cover", flexShrink: 0 },
+  brandTitle: { fontFamily: "Georgia, serif", fontSize: 16.5, lineHeight: 1.2 },
+  brandSub: { fontSize: 11.5, color: "#B8AD8C", marginTop: 2, fontFamily: "system-ui, sans-serif" },
+  sectionLabel: { fontSize: 11, letterSpacing: 0.3, color: "#9B8F6C", margin: "20px 0 8px", fontFamily: "system-ui, sans-serif" },
+  whosHere: { marginBottom: 4 },
+  presenceRow: { display: "flex", alignItems: "center", gap: 7, padding: "3px 0", fontFamily: "system-ui, sans-serif", fontSize: 12.5, color: "#D9CFAF" },
+  presenceDot: { width: 7, height: 7, borderRadius: "50%", background: "#7FB07A", flexShrink: 0 },
+  presenceName: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  switchUserLink: { background: "none", border: "none", color: "#9B8F6C", fontSize: 11, cursor: "pointer", padding: "4px 0 0", fontFamily: "system-ui, sans-serif", textAlign: "left" },
+  restrictedNote: { fontSize: 11.5, color: "#9B8F6C", fontFamily: "system-ui, sans-serif", marginTop: 8, lineHeight: 1.5 },
+  weekRow: { display: "flex", gap: 6 },
+  monthNavRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, background: "#2B2820", border: "1px solid #3B3830", borderRadius: 6, padding: "6px 8px" },
+  monthNavBtn: { background: "transparent", border: "none", color: "#D9CFAF", fontSize: 17, cursor: "pointer", padding: "0 6px", lineHeight: 1 },
+  monthNavLabel: { fontFamily: "system-ui, sans-serif", fontSize: 13, color: "#EFE7D3", fontWeight: 600, textAlign: "center", flex: 1 },
+  weekBtn: { flex: 1, padding: "8px 0", borderRadius: 6, border: "1px solid #3B3830", background: "transparent", color: "#D9CFAF", cursor: "pointer", fontFamily: "system-ui, sans-serif", fontSize: 13 },
+  weekBtnActive: { background: "#A9782F", borderColor: "#A9782F", color: "#23211D", fontWeight: 700 },
+  weekDateLabel: { fontSize: 12, color: "#B8AD8C", marginTop: 8, fontFamily: "system-ui, sans-serif" },
+  slotRow: { display: "flex", flexDirection: "column", gap: 6, marginTop: 14 },
+  slotBtn: { padding: "9px 12px", borderRadius: 6, border: "1px solid #3B3830", background: "transparent", color: "#D9CFAF", cursor: "pointer", textAlign: "left", fontFamily: "system-ui, sans-serif", fontSize: 13.5 },
+  slotBtnActive: { background: "#2F4858", borderColor: "#2F4858", color: "#EFE7D3", fontWeight: 600 },
+  navList: { display: "flex", flexDirection: "column", gap: 3 },
+  navItem: { textAlign: "left", background: "transparent", border: "none", color: "#CFC49E", padding: "8px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "system-ui, sans-serif", fontSize: 13.5 },
+  navItemActive: { background: "#332F27", color: "#F3ECD8", fontWeight: 600 },
+  sidebarFoot: { fontSize: 11, color: "#867A5C", lineHeight: 1.5, fontFamily: "system-ui, sans-serif", borderTop: "1px solid #3B3830", paddingTop: 14 },
+  main: { flex: 1, padding: "40px 48px", overflowY: "auto" },
+  viewWrap: { maxWidth: 900 },
+  viewHeader: { marginBottom: 22 },
+  h1: { fontSize: 28, margin: 0, fontFamily: "Georgia, serif" },
+  viewMeta: { color: "#7A6E4E", fontSize: 13.5, marginTop: 6, fontFamily: "system-ui, sans-serif" },
+  flexTag: { marginLeft: 10, background: "#E7DEC2", color: "#5C5230", padding: "2px 8px", borderRadius: 20, fontSize: 11.5 },
+  rolesCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 10, overflow: "hidden" },
+  emptyNote: { padding: 20, color: "#8A7F5E", fontFamily: "system-ui, sans-serif", fontSize: 14 },
+  roleRow: { display: "flex", alignItems: "flex-start", padding: "16px 20px", gap: 20 },
+  roleName: { width: 220, flexShrink: 0, paddingTop: 9, fontSize: 15 },
+  roleInputWrap: { flex: 1 },
+  fieldLabel: { fontSize: 12.5, color: "#7A6E4E", marginBottom: 6, fontFamily: "system-ui, sans-serif", fontWeight: 600 },
+  input: { width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 6, border: "1px solid #D8CFB0", fontSize: 14.5, fontFamily: "system-ui, sans-serif", color: "#2A2620", outline: "none" },
+  inputConflict: { borderColor: "#C24A3A", background: "#FBEEEA" },
+  inputDup: { borderColor: "#C9A227", background: "#FBF6E4" },
+  issueNote: { fontSize: 12.5, marginTop: 6, fontFamily: "system-ui, sans-serif", lineHeight: 1.5 },
+  masterCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 10, overflow: "hidden" },
+  table: { width: "100%", borderCollapse: "collapse", fontFamily: "system-ui, sans-serif", fontSize: 13.5 },
+  th: { textAlign: "left", padding: "12px 16px", background: "#EFE7D3", color: "#5C5230", fontWeight: 600, fontSize: 12.5 },
+  td: { padding: "11px 16px", borderTop: "1px solid #EFE7D3" },
+  tdMuted: { color: "#B0A582" },
+  badgeConflict: { background: "#EBBAB0", color: "#7A2418", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
+  badgeDup: { background: "#EEDCA0", color: "#6B4F0D", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
+  badgeOk: { background: "#CFDCC4", color: "#385026", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
+  manageGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 },
+  teamCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 10, padding: 16, fontFamily: "system-ui, sans-serif" },
+  teamCardHead: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 },
+  teamNameInput: { fontFamily: "Georgia, serif", fontSize: 16, border: "none", borderBottom: "1px solid transparent", padding: "2px 0", flex: 1, outline: "none", background: "transparent" },
+  linkDanger: { background: "none", border: "none", color: "#A6402F", fontSize: 12, cursor: "pointer", padding: 0, fontFamily: "system-ui, sans-serif" },
+  flexToggle: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#6B5E3E", marginBottom: 12 },
+  roleList: { display: "flex", flexDirection: "column", gap: 6 },
+  roleEditRow: { display: "flex", alignItems: "center", gap: 6 },
+  roleEditInput: { flex: 1, padding: "7px 10px", borderRadius: 6, border: "1px solid #D8CFB0", fontSize: 13.5, fontFamily: "system-ui, sans-serif", outline: "none" },
+  iconDanger: { background: "#F3E4DF", color: "#A6402F", border: "none", borderRadius: 6, width: 26, height: 26, cursor: "pointer", fontSize: 16, lineHeight: 1 },
+  addRoleRow: { display: "flex", gap: 6, marginTop: 4 },
+  smallBtn: { padding: "7px 12px", borderRadius: 6, border: "none", background: "#2F4858", color: "#EFE7D3", cursor: "pointer", fontSize: 13, fontFamily: "system-ui, sans-serif", whiteSpace: "nowrap" },
+  newTeamCard: { border: "1.5px dashed #CBBF97", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 8, justifyContent: "center" },
+  newTeamLabel: { fontFamily: "system-ui, sans-serif", fontSize: 13, color: "#7A6E4E", fontWeight: 600 },
+  pairNote: { fontFamily: "system-ui, sans-serif", fontSize: 12.5, color: "#7A6E4E", marginBottom: 10, maxWidth: 560 },
+  pairGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 },
+  pairItem: { display: "flex", alignItems: "center", gap: 8, fontFamily: "system-ui, sans-serif", fontSize: 13, background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 8, padding: "8px 10px" },
+  weekLabelGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 },
+  weekLabelItem: { display: "flex", flexDirection: "column", gap: 4, fontFamily: "system-ui, sans-serif", fontSize: 12.5, color: "#7A6E4E" },
+  weekLabelInput: { padding: "7px 10px", borderRadius: 6, border: "1px solid #D8CFB0", fontSize: 13, fontFamily: "system-ui, sans-serif", outline: "none" },
+  restrictAddRow: { display: "flex", gap: 8, flexWrap: "wrap", maxWidth: 640 },
+  restrictSelect: { padding: "8px 10px", borderRadius: 6, border: "1px solid #D8CFB0", fontSize: 13.5, fontFamily: "system-ui, sans-serif", background: "#FFFFFF", color: "#2A2620" },
+  restrictList: { marginTop: 14, display: "flex", flexDirection: "column", gap: 6, maxWidth: 640 },
+  restrictRow: { display: "flex", alignItems: "center", gap: 12, background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 8, padding: "9px 12px", fontFamily: "system-ui, sans-serif", fontSize: 13 },
+  restrictName: { fontWeight: 600, minWidth: 120 },
+  restrictTeam: { flex: 1, color: "#7A6E4E" },
+
+  sheet: { background: "#FFFFFF", border: "2px solid #23211D", fontFamily: "system-ui, sans-serif", color: "#111" },
+  sheetBannerMain: { background: "#1F3864", color: "#FFFFFF", textAlign: "center", fontWeight: 800, fontSize: 15, padding: "8px 6px", letterSpacing: 0.3 },
+  sheetBannerSub: { background: "#B4C6E7", color: "#1F3864", textAlign: "center", fontWeight: 700, fontSize: 11.5, padding: "5px 6px", borderTop: "1px solid #23211D" },
+  sheetBannerBold: { background: "#D9E2F3", color: "#1F3864", textAlign: "center", fontWeight: 800, fontSize: 12.5, padding: "5px 6px", borderTop: "1px solid #23211D" },
+  sheetBannerLight: { background: "#EDF1FA", color: "#1F3864", textAlign: "center", fontWeight: 600, fontSize: 11.5, padding: "5px 6px", borderTop: "1px solid #23211D" },
+  sheetSectionHead: { background: "#1F3864", color: "#FFFFFF", fontWeight: 700, fontSize: 11.5, padding: "5px 10px", letterSpacing: 0.3 },
+  sheetTable: { width: "100%", borderCollapse: "collapse", fontSize: 11.5, borderTop: "1px solid #23211D" },
+  sheetTh: { textAlign: "left", padding: "5px 8px", background: "#1F3864", color: "#FFFFFF", fontWeight: 700, fontSize: 10.5, border: "1px solid #23211D" },
+  sheetTd: { padding: "5px 8px", border: "1px solid #B7BFC9", verticalAlign: "top" },
+  sheetBand: { padding: "4px 8px", background: "#B4C6E7", color: "#1F3864", fontWeight: 700, fontSize: 11, border: "1px solid #23211D" },
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
