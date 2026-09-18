@@ -208,17 +208,24 @@ const pairKey = (a, b) => [a, b].sort().join("~");
 // nickname or first name only (e.g. "Vic" or "Vic" alone instead of
 // "Vic Alfonso"), so an exact full-name match misses those rows. This
 // treats two names as the same person if they're an exact match, share
-// the same first word, or one of them is a single word that appears as
-// a whole word inside the other.
+// the same first word, or if every word of the shorter name appears in
+// the longer one — which is what lets a surname find the full name
+// ("Cruz" → "Juan Cruz") and keeps two-word surnames working too
+// ("Dela Cruz" → "Juan Dela Cruz").
+function nameWords(name) {
+  return normKey(name)
+    .replace(/[.,]/g, " ")      // "Cruz, Juan" / "Juan C. Cruz"
+    .split(/\s+/)
+    .filter(Boolean);
+}
 function namesLikelyMatch(nameA, nameB) {
-  const a = normKey(nameA);
-  const b = normKey(nameB);
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const aWords = a.split(/\s+/).filter(Boolean);
-  const bWords = b.split(/\s+/).filter(Boolean);
-  if (aWords.length === 1 && bWords.includes(aWords[0])) return true;
-  if (bWords.length === 1 && aWords.includes(bWords[0])) return true;
+  const aWords = nameWords(nameA);
+  const bWords = nameWords(nameB);
+  if (!aWords.length || !bWords.length) return false;
+  if (aWords.join(" ") === bWords.join(" ")) return true;
+  const shorter = aWords.length <= bWords.length ? aWords : bWords;
+  const longer = aWords.length <= bWords.length ? bWords : aWords;
+  if (shorter.every((w) => longer.includes(w))) return true;
   return aWords[0] === bWords[0];
 }
 
@@ -939,7 +946,10 @@ function QuickView({ config, monthState, year, month, onPrevMonth, onNextMonth, 
               <div className="no-print" style={{ ...styles.lightCard, marginBottom: 16, maxWidth: 420 }}>
                 <div style={styles.fieldLabel}>Your name</div>
                 <input type="text" value={guestName} onChange={(e) => setGuestName(e.target.value)}
-                  placeholder="e.g. Zerah" style={styles.input} />
+                  placeholder="e.g. Cruz, or Juan Cruz" style={styles.input} />
+                <div style={{ ...styles.pairNote, marginTop: 8, marginBottom: 0 }}>
+                  First name or surname alone is enough — typing "Cruz" finds "Juan Cruz".
+                </div>
               </div>
               {norm(guestName) ? (
                 <MyScheduleView config={config} monthState={monthState} userName={guestName} year={year} month={month} />
@@ -1738,7 +1748,7 @@ function RenameModal({ currentName, onRenameUser, onDone }) {
         <input type="text" value={value} autoFocus
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-          placeholder="e.g. Juan Dela Cruz" style={{ ...styles.input, marginBottom: error ? 8 : 16 }} />
+          placeholder="e.g. Zerah Torres" style={{ ...styles.input, marginBottom: error ? 8 : 16 }} />
         {error && <div style={{ color: "#A6402F", fontSize: 12.5, fontFamily: "system-ui, sans-serif", marginBottom: 16 }}>{error}</div>}
         <div style={styles.modalActions}>
           <button onClick={onDone} style={styles.modalCancelBtn} disabled={busy}>Cancel</button>
@@ -3084,8 +3094,9 @@ function MyScheduleView({ config, monthState, userName, year, month }) {
           placeholder="e.g. Huwana, if that's how you're listed in the schedule"
           style={{ ...styles.input, maxWidth: 320 }} />
         <div style={{ ...styles.pairNote, marginTop: 8, marginBottom: 0 }}>
-          Matches "{userName}" automatically, including first-name-only or nickname-style entries.
-          Add a nickname here too if assignments use a name this doesn't catch. Saved only on this device.
+          Matches "{userName}" automatically — by first name or by surname alone, plus
+          nickname-style entries. Add a nickname here if assignments use a name this
+          doesn't catch. Saved only on this device.
         </div>
       </div>
 
