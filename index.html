@@ -1,3 +1,6 @@
+
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -30,8 +33,11 @@
   .master-cards { display: none; }
   @media (max-width: 640px) {
     .master-table-wrap { display: none; }
-    .master-cards { display: block; }
+    .master-cards { display: flex; }
+    .master-outer { background: transparent !important; border: none !important; box-shadow: none !important; overflow: visible !important; }
   }
+  .master-row:hover { background: rgba(31,56,100,0.035) !important; }
+  .mc-row:active { background: rgba(31,56,100,0.05); }
 
   @media (max-width: 640px) {
     .sheet-toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 26px; }
@@ -2137,16 +2143,17 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
 
   // Grouped by team for the simplified mobile card view — avoids repeating
   // "TEAM: Service Lead" on every single line, which is what made the
-  // stacked mobile table hard to scan. Rows are already produced team-by-
-  // team above, so a team header is inserted whenever the team changes.
-  const groupedRows = [];
-  let lastTeamId = null;
+  // stacked mobile table hard to scan, and lets each team render as its
+  // own card. Rows are already produced team-by-team above, so a new
+  // section starts whenever the team changes.
+  const teamSections = [];
   filteredRows.forEach((r) => {
-    if (r.team.id !== lastTeamId) {
-      groupedRows.push({ kind: "team", id: `team-${r.team.id}`, team: r.team });
-      lastTeamId = r.team.id;
+    const current = teamSections[teamSections.length - 1];
+    if (!current || current.team.id !== r.team.id) {
+      teamSections.push({ team: r.team, rows: [r] });
+    } else {
+      current.rows.push(r);
     }
-    groupedRows.push({ kind: "row", id: r.key, row: r });
   });
 
   const toggleCheck = (key) => {
@@ -2353,6 +2360,15 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
     );
   }
 
+  const hasInfo = info.series || info.topic || info.verse || info.announcements;
+  const infoItems = [
+    info.series && { label: "Series", value: info.series },
+    info.topic && { label: "Topic", value: info.topic },
+    info.verse && { label: "Verse", value: info.verse },
+    info.announcements && { label: "Announcements", value: info.announcements },
+  ].filter(Boolean);
+  const fillPct = rows.length ? Math.round((filled / rows.length) * 100) : 0;
+
   return (
     <div style={styles.viewWrap}>
       <header style={styles.viewHeader}>
@@ -2361,6 +2377,11 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
           {dateLabel} · {slot} · {filled} of {rows.length} roles filled
           {searchQuery && ` · ${filteredRows.length} match${filteredRows.length === 1 ? "" : "es"}`}
         </div>
+        {rows.length > 0 && (
+          <div style={styles.masterProgressTrack}>
+            <div style={{ ...styles.masterProgressFill, width: `${fillPct}%` }} />
+          </div>
+        )}
       </header>
       <div style={{ marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <button onClick={() => setView("print")} style={styles.smallBtn}>🖨 Print-friendly run sheet</button>
@@ -2371,17 +2392,18 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
           <button onClick={() => setSearch("")} style={styles.ghostBtn}>Clear</button>
         )}
       </div>
-      {(info.series || info.topic || info.verse || info.announcements) && (
-        <div style={styles.masterCard}>
-          <div style={{ padding: "14px 18px", fontFamily: "system-ui, sans-serif", fontSize: 13.5, display: "flex", flexDirection: "column", gap: 4 }}>
-            {info.series && <div><strong>Series:</strong> {info.series}</div>}
-            {info.topic && <div><strong>Topic:</strong> {info.topic}</div>}
-            {info.verse && <div><strong>Verse:</strong> {info.verse}</div>}
-            {info.announcements && <div><strong>Announcements:</strong> {info.announcements}</div>}
-          </div>
+      {hasInfo && (
+        <div style={{ ...styles.masterInfoCard, marginBottom: 16 }}>
+          {infoItems.map((item, i) => (
+            <div key={item.label} style={i === infoItems.length - 1 ? { ...styles.masterInfoItem, borderBottom: "none", paddingBottom: 0 } : styles.masterInfoItem}>
+              <div style={styles.masterInfoLabel}>{item.label}</div>
+              <div style={styles.masterInfoValue}>{item.value}</div>
+            </div>
+          ))}
         </div>
       )}
-      <div style={{ ...styles.masterCard, marginTop: (info.series || info.topic || info.verse || info.announcements) ? 16 : 0 }}>
+
+      <div className="master-outer" style={styles.masterCard}>
         <div className="master-table-wrap">
           <table style={styles.table} className="responsive-table">
             <thead>
@@ -2401,7 +2423,7 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                 const hasConflict = r.issues.some((x) => x.type === "conflict");
                 const hasDup = r.issues.some((x) => x.type === "duplicate");
                 return (
-                  <tr key={r.key} style={{ background: hasConflict ? "#FBE9E5" : hasDup ? "#FBF3DC" : idx % 2 === 0 ? "#FFFFFF" : "#FAF6EA" }}>
+                  <tr key={r.key} className="master-row" style={{ background: hasConflict ? "#FBE9E5" : hasDup ? "#FBF3DC" : idx % 2 === 0 ? "#FFFFFF" : "#FAF6EA" }}>
                     <td style={styles.td} data-label="Team">{searchQuery ? highlightMatch(r.team.name, searchQuery) : r.team.name}</td>
                     <td style={styles.td} data-label="Role">{searchQuery ? highlightMatch(r.role.name, searchQuery) : r.role.name}</td>
                     <td style={{ ...styles.td, fontWeight: r.name ? 600 : 400 }} data-label="Volunteer">
@@ -2424,35 +2446,36 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
           </table>
         </div>
 
-        <div className="master-cards">
-          {groupedRows.length === 0 && (
+        <div className="master-cards" style={styles.masterSectionWrap}>
+          {teamSections.length === 0 && (
             <div style={styles.emptyNote}>No teams, roles, or volunteers match "{searchQuery}".</div>
           )}
-          {groupedRows.map((g) => {
-            if (g.kind === "team") {
-              return <div key={g.id} style={styles.mcTeamHeader}>{searchQuery ? highlightMatch(g.team.name, searchQuery) : g.team.name}</div>;
-            }
-            const r = g.row;
-            const hasConflict = r.issues.some((x) => x.type === "conflict");
-            const hasDup = r.issues.some((x) => x.type === "duplicate");
-            const statusColor = hasConflict ? "#8C2F22" : hasDup ? "#8A6A1A" : r.name ? "#385026" : "#B0A582";
-            return (
-              <div key={g.id} style={styles.mcRow}>
-                <div style={styles.mcRoleCol}>
-                  <div style={styles.mcRoleName}>{searchQuery ? highlightMatch(r.role.name, searchQuery) : r.role.name}</div>
-                  {r.role.hasVerse && r.verse && <div style={styles.mcVerse}>{r.verse}</div>}
-                  {hasConflict && <div style={{ ...styles.mcStatusNote, color: "#8C2F22" }}>Double-booked</div>}
-                  {!hasConflict && hasDup && <div style={{ ...styles.mcStatusNote, color: "#8A6A1A" }}>Also on this team</div>}
-                </div>
-                <div style={{ ...styles.mcVolunteer, color: statusColor, fontWeight: r.name ? 600 : 400 }}>
-                  {r.name ? (searchQuery ? highlightMatch(r.name, searchQuery) : r.name) : "— open —"}
-                  {r.meta && typeof r.meta.at === "number" && formatRelativeTime(r.meta.at) && (
-                    <div style={styles.editMetaNoteSm}>{r.meta.by} · {formatRelativeTime(r.meta.at)}</div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          {teamSections.map((section) => (
+            <div key={section.team.id} style={styles.masterSection}>
+              <div style={styles.mcTeamHeader}>{searchQuery ? highlightMatch(section.team.name, searchQuery) : section.team.name}</div>
+              {section.rows.map((r, i) => {
+                const hasConflict = r.issues.some((x) => x.type === "conflict");
+                const hasDup = r.issues.some((x) => x.type === "duplicate");
+                const isLast = i === section.rows.length - 1;
+                return (
+                  <div key={r.key} className="mc-row" style={{ ...styles.mcRow, borderBottom: isLast ? "none" : "1px solid #F1EBDA", background: i % 2 === 1 ? "#FCFAF3" : "#FFFFFF" }}>
+                    <div style={styles.mcRoleCol}>
+                      <div style={styles.mcRoleName}>{searchQuery ? highlightMatch(r.role.name, searchQuery) : r.role.name}</div>
+                      {r.role.hasVerse && r.verse && <div style={styles.mcVerse}>{r.verse}</div>}
+                      {hasConflict && <div style={styles.mcStatusNote}><span style={styles.badgeConflict}>Double-booked</span></div>}
+                      {!hasConflict && hasDup && <div style={styles.mcStatusNote}><span style={styles.badgeDup}>Also on this team</span></div>}
+                    </div>
+                    <div style={{ ...styles.mcVolunteer, color: r.name ? "#2A2620" : "#B0A582", fontWeight: r.name ? 600 : 400 }}>
+                      {r.name ? (searchQuery ? highlightMatch(r.name, searchQuery) : r.name) : <span style={styles.mcOpen}>— open —</span>}
+                      {r.meta && typeof r.meta.at === "number" && formatRelativeTime(r.meta.at) && (
+                        <div style={styles.editMetaNoteSm}>{r.meta.by} · {formatRelativeTime(r.meta.at)}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -3458,21 +3481,30 @@ const styles = {
   suggestDropdown: { position: "absolute", top: "calc(100% + 2px)", left: 0, right: 0, background: "#FFFFFF", border: "1px solid #B8AD8C", borderRadius: 6, boxShadow: "0 2px 6px rgba(35,33,29,0.12)", maxHeight: 220, overflowY: "auto", zIndex: 20 },
   suggestPopup: { position: "fixed", background: "linear-gradient(180deg, #3E5F92 0%, #1F3864 55%, #16294B 100%)", borderRadius: 12, border: "1px solid #16294B", boxShadow: "0 20px 25px -5px rgba(15,23,42,0.45), 0 8px 10px -6px rgba(15,23,42,0.35), 0 1px 0 rgba(255,255,255,0.12) inset", maxHeight: 240, overflowY: "auto", zIndex: 1000000 },
   suggestItem: { padding: "9px 14px", fontSize: 16, fontFamily: "system-ui, sans-serif", color: "#EDF1FA", cursor: "pointer", transition: "background 0.1s ease" },
-  masterCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 14, overflowX: "auto", WebkitOverflowScrolling: "touch", boxShadow: "0 12px 28px -10px rgba(35,33,29,0.22), 0 4px 10px -6px rgba(35,33,29,0.12)" },
-  mcTeamHeader: { background: "#1F3864", color: "#EFE7D3", fontFamily: "system-ui, sans-serif", fontWeight: 700, fontSize: 12.5, letterSpacing: 0.4, textTransform: "uppercase", padding: "10px 18px" },
-  mcRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, padding: "12px 18px", borderBottom: "1px solid #F1EBDA" },
+  masterCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 16, overflowX: "auto", WebkitOverflowScrolling: "touch", boxShadow: "0 12px 28px -10px rgba(35,33,29,0.22), 0 4px 10px -6px rgba(35,33,29,0.12)" },
+  masterInfoCard: { background: "#FBF8EE", border: "1px solid #E4DCC6", borderRadius: 16, padding: "16px 20px", display: "flex", flexDirection: "column" },
+  masterInfoItem: { padding: "10px 0", borderBottom: "1px solid #EFE7D3" },
+  masterInfoLabel: { fontFamily: "system-ui, sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: "#A9782F" },
+  masterInfoValue: { fontFamily: "system-ui, sans-serif", fontSize: 14, color: "#2A2620", marginTop: 3, lineHeight: 1.5, whiteSpace: "pre-wrap" },
+  masterProgressTrack: { height: 6, borderRadius: 20, background: "#EFE7D3", overflow: "hidden", marginTop: 10, maxWidth: 260 },
+  masterProgressFill: { height: "100%", borderRadius: 20, background: "linear-gradient(90deg, #A9782F 0%, #1F3864 100%)", transition: "width 0.3s ease" },
+  masterSectionWrap: { display: "flex", flexDirection: "column", gap: 14, width: "100%" },
+  masterSection: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 14, overflow: "hidden", boxShadow: "0 8px 20px -12px rgba(35,33,29,0.2)" },
+  mcTeamHeader: { background: "linear-gradient(90deg, #1F3864 0%, #24406F 100%)", color: "#EFE7D3", fontFamily: "system-ui, sans-serif", fontWeight: 700, fontSize: 12, letterSpacing: 0.6, textTransform: "uppercase", padding: "11px 18px", borderBottom: "1px solid rgba(255,255,255,0.1)" },
+  mcRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, padding: "14px 18px" },
   mcRoleCol: { flex: 1, minWidth: 0 },
   mcRoleName: { fontFamily: "system-ui, sans-serif", fontSize: 14.5, fontWeight: 600, color: "#2A2620" },
-  mcVerse: { fontFamily: "system-ui, sans-serif", fontSize: 12, color: "#7A6E4E", marginTop: 2 },
-  mcStatusNote: { fontFamily: "system-ui, sans-serif", fontSize: 11.5, fontWeight: 600, marginTop: 3 },
+  mcVerse: { fontFamily: "system-ui, sans-serif", fontSize: 12, color: "#7A6E4E", marginTop: 3 },
+  mcStatusNote: { marginTop: 6 },
   mcVolunteer: { fontFamily: "system-ui, sans-serif", fontSize: 14.5, textAlign: "right", flexShrink: 0, maxWidth: "50%" },
-  table: { minWidth: 640, borderCollapse: "collapse", fontFamily: "system-ui, sans-serif", fontSize: 13.5 },
-  th: { textAlign: "left", padding: "12px 16px", background: "#EFE7D3", color: "#5C5230", fontWeight: 600, fontSize: 12.5 },
-  td: { padding: "11px 16px", borderTop: "1px solid #EFE7D3" },
-  tdMuted: { color: "#B0A582" },
-  badgeConflict: { background: "#EBBAB0", color: "#7A2418", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
-  badgeDup: { background: "#EEDCA0", color: "#6B4F0D", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
-  badgeOk: { background: "#CFDCC4", color: "#385026", padding: "3px 9px", borderRadius: 20, fontSize: 12, fontWeight: 600 },
+  mcOpen: { color: "#B0A582", fontStyle: "italic", fontSize: 13.5 },
+  table: { minWidth: 640, borderCollapse: "collapse", fontFamily: "system-ui, sans-serif", fontSize: 13.5, width: "100%" },
+  th: { textAlign: "left", padding: "13px 18px", background: "#EFE7D3", color: "#5C5230", fontWeight: 700, fontSize: 11.5, letterSpacing: 0.4, textTransform: "uppercase", borderBottom: "2px solid #1F3864" },
+  td: { padding: "13px 18px", borderTop: "1px solid #F1EBDA" },
+  tdMuted: { color: "#B0A582", fontStyle: "italic" },
+  badgeConflict: { display: "inline-block", background: "#EBBAB0", color: "#7A2418", padding: "3px 10px", borderRadius: 20, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.2 },
+  badgeDup: { display: "inline-block", background: "#EEDCA0", color: "#6B4F0D", padding: "3px 10px", borderRadius: 20, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.2 },
+  badgeOk: { display: "inline-block", background: "#CFDCC4", color: "#385026", padding: "3px 10px", borderRadius: 20, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.2 },
   manageGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 },
   teamCard: { background: "#FFFFFF", border: "1px solid #E4DCC6", borderRadius: 14, padding: 16, fontFamily: "system-ui, sans-serif", boxShadow: "0 12px 28px -10px rgba(35,33,29,0.22), 0 4px 10px -6px rgba(35,33,29,0.12)" },
   teamCardSummary: { cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 16, color: "#1F3864", listStyle: "revert" },
