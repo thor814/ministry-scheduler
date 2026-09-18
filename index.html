@@ -886,7 +886,13 @@ function App() {
   const [tab, setTab] = useState("assign");
   const [authUser, setAuthUser] = useState(undefined); // undefined = checking, null = signed out
   const [entryScreen, setEntryScreen] = useState("choice"); // "choice" | "login" | "quickview" — only used while signed out
-  const userName = authUser ? norm(authUser.displayName || (authUser.email || "").split("@")[0]) : "";
+  // Firebase mutates auth.currentUser in place when updateProfile() resolves,
+  // so setAuthUser(auth.currentUser) alone wouldn't produce a new reference
+  // for React to notice. This override holds the freshly-saved nickname for
+  // the rest of the session so the UI updates immediately; it's cleared
+  // whenever the signed-in user changes.
+  const [displayNameOverride, setDisplayNameOverride] = useState(null);
+  const userName = authUser ? norm(displayNameOverride ?? authUser.displayName ?? (authUser.email || "").split("@")[0]) : "";
   // Permission lookups key off the registered email, not the display name/
   // nickname — a nickname is easy for anyone to type at signup and would
   // otherwise let someone claim another editor's access just by matching
@@ -903,6 +909,25 @@ function App() {
     if (!auth) { setAuthUser(null); return; }
     const unsub = auth.onAuthStateChanged((u) => { setAuthUser(u); if (!u) setEntryScreen("choice"); });
     return unsub;
+  }, []);
+
+  useEffect(() => { setDisplayNameOverride(null); }, [authUser && authUser.uid]);
+
+  // Lets a signed-in user change the name/nickname they show up as on the
+  // schedule, without needing Firebase console access. Edit access itself
+  // still depends on the Editors list (keyed by email, see the note above
+  // AuthGate), so renaming here never grants or revokes anything — it just
+  // updates how this person is displayed and matched against assignments.
+  const updateNickname = useCallback(async (newName) => {
+    const clean = norm(newName);
+    if (!clean || !auth || !auth.currentUser) return { ok: false, error: "Enter a name." };
+    try {
+      await auth.currentUser.updateProfile({ displayName: clean });
+      setDisplayNameOverride(clean);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || "Couldn't save that name." };
+    }
   }, []);
 
   useEffect(() => {
@@ -1098,7 +1123,7 @@ function App() {
         tab={effectiveTab} setTab={setTab} activeTeamId={activeTeam && activeTeam.id}
         setActiveTeamId={setActiveTeamId} userName={userName} onlineUsers={onlineUsers}
         allowedTeamIds={allowedTeamIds} hasRestrictionEntry={hasRestrictionEntry} canManage={canManage} monthLabelText={monthLabel(year, month)}
-        year={year} month={month}
+        year={year} month={month} onRenameUser={updateNickname}
         onPrevMonth={() => shiftMonth(-1)} onNextMonth={() => shiftMonth(1)} isMobile={isMobile} />
       <main className="app-main" style={{ ...styles.main, ...(isMobile ? styles.mainMobile : {}) }}>
         {isMobile && (
@@ -1221,8 +1246,9 @@ function initials(name) {
 
 const TAB_ICONS = { myschedule: "🗓️", assign: "👥", info: "📝", master: "📋", manage: "⚙️" };
 
-function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab, activeTeamId, setActiveTeamId, userName, onlineUsers, allowedTeamIds, hasRestrictionEntry, canManage, monthLabelText, year, month, onPrevMonth, onNextMonth, isMobile }) {
+function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab, activeTeamId, setActiveTeamId, userName, onlineUsers, allowedTeamIds, hasRestrictionEntry, canManage, monthLabelText, year, month, onPrevMonth, onNextMonth, isMobile, onRenameUser }) {
   const others = (onlineUsers || []).filter((u) => norm(u.name).toLowerCase() !== norm(userName).toLowerCase());
+  const [renaming, setRenaming] = useState(false);
   const switchUser = () => {
     if (auth) auth.signOut();
   };
@@ -1252,10 +1278,16 @@ function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab
             </nav>
           </React.Fragment>
         )}
+        {onRenameUser && (
+          <button onClick={() => setRenaming(true)} style={styles.compactEditNickname} aria-label="Edit your name" title="Edit your name">✎</button>
+        )}
         <button onClick={switchUser} style={styles.compactSwitchUser} aria-label="Switch user" title={`${userName} — tap to switch`}>
           <span style={styles.compactSwitchAvatar}>{initials(userName)}</span>
           <span style={styles.compactSwitchLabel}>Switch</span>
         </button>
+        {renaming && (
+          <RenameModal currentName={userName} onRenameUser={onRenameUser} onDone={() => setRenaming(false)} />
+        )}
       </aside>
     );
   }
@@ -1277,6 +1309,9 @@ function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab
             <div style={styles.presenceRow}>
               <span style={styles.presenceDot} />
               <span style={styles.presenceName}>{userName} (you)</span>
+              {onRenameUser && (
+                <button onClick={() => setRenaming(true)} style={styles.editNicknameBtn} aria-label="Edit your name" title="Edit your name">✎</button>
+              )}
             </div>
             {others.map((u) => (
               <div key={u.id} style={styles.presenceRow}>
@@ -1286,6 +1321,9 @@ function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab
             ))}
             <button onClick={switchUser} style={styles.switchUserLink}>Not you? Switch</button>
           </div>
+        )}
+        {renaming && (
+          <RenameModal currentName={userName} onRenameUser={onRenameUser} onDone={() => setRenaming(false)} />
         )}
 
         <div style={styles.sectionLabel}>Month</div>
@@ -1534,6 +1572,62 @@ function ClearNamesModal({ teamName, onCancel, onConfirm }) {
         <div style={styles.modalActions}>
           <button onClick={onCancel} style={styles.modalCancelBtn}>Cancel</button>
           <button onClick={onConfirm} style={styles.modalConfirmBtn}>Yes, Clear Names</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// Lets the signed-in user change the name they show up as on the schedule
+// (their Firebase displayName). Purely cosmetic/matching — see the note by
+// updateNickname in App for why this never affects edit access.
+function RenameModal({ currentName, onRenameUser, onDone }) {
+  const [value, setValue] = useState(currentName || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onDone(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onDone]);
+
+  const save = async () => {
+    if (!norm(value)) { setError("Enter a name."); return; }
+    setBusy(true);
+    setError("");
+    const result = await onRenameUser(value);
+    setBusy(false);
+    if (result && result.ok) {
+      onDone();
+    } else {
+      setError((result && result.error) || "Couldn't save that name.");
+    }
+  };
+
+  return ReactDOM.createPortal(
+    <div className="no-print" style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) onDone(); }}>
+      <div style={styles.modalCard}>
+        <div style={styles.modalIconRow}>
+          <div style={{ ...styles.modalIconBadge, background: "#1F3864" }}>✎</div>
+          <div style={styles.modalTitle}>Edit Your Name</div>
+        </div>
+        <div style={styles.modalBody}>
+          This is the name shown on the schedule and used to match your
+          assignments. It doesn't affect who can edit — that's controlled by
+          your team leader's Editors list.
+        </div>
+        <input type="text" value={value} autoFocus
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+          placeholder="e.g. Juan Dela Cruz" style={{ ...styles.input, marginBottom: error ? 8 : 16 }} />
+        {error && <div style={{ color: "#A6402F", fontSize: 12.5, fontFamily: "system-ui, sans-serif", marginBottom: 16 }}>{error}</div>}
+        <div style={styles.modalActions}>
+          <button onClick={onDone} style={styles.modalCancelBtn} disabled={busy}>Cancel</button>
+          <button onClick={save} style={{ ...styles.smallBtn, padding: "9px 18px", opacity: busy ? 0.6 : 1 }} disabled={busy}>
+            {busy ? "Saving…" : "Save"}
+          </button>
         </div>
       </div>
     </div>,
@@ -3677,6 +3771,8 @@ const styles = {
   presenceRow: { display: "flex", alignItems: "center", gap: 7, padding: "3px 0", fontFamily: "system-ui, sans-serif", fontSize: 12.5, color: "#D9CFAF" },
   presenceDot: { width: 7, height: 7, borderRadius: "50%", background: "#7FB07A", flexShrink: 0 },
   presenceName: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  editNicknameBtn: { background: "none", border: "none", color: "#9B8F6C", fontSize: 12, cursor: "pointer", padding: "0 0 0 2px", flexShrink: 0, lineHeight: 1 },
+  compactEditNickname: { marginTop: "auto", width: 26, height: 26, borderRadius: "50%", border: "1px solid #3B3830", background: "#2B2820", color: "#9B8F6C", fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   switchUserLink: { background: "none", border: "none", color: "#9B8F6C", fontSize: 11, cursor: "pointer", padding: "4px 0 0", fontFamily: "system-ui, sans-serif", textAlign: "left" },
   restrictedNote: { fontSize: 11.5, color: "#9B8F6C", fontFamily: "system-ui, sans-serif", marginTop: 8, lineHeight: 1.5 },
   weekRow: { display: "flex", gap: 6 },
