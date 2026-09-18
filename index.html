@@ -1442,17 +1442,21 @@ function AssignView({ config, updateConfig, monthState, updateMonthState, week, 
               <div style={{ ...styles.roleName, ...(isMobile ? { width: "100%", paddingTop: 0 } : {}) }}><span style={styles.roleNameDot} />{role.name}</div>
                 <div style={{ ...styles.roleInputWrap, ...(isMobile ? { width: "100%" } : {}) }}>
                 <div style={{ display: "flex", gap: 10, ...(isMobile ? { flexDirection: "column" } : {}) }}>
-                  <VolunteerNameInput
-                    value={value}
-                    onChange={(val) => setName(role.id, val)}
-                    volunteers={roleVolunteers}
-                    locked={locked}
-                    placeholder="Volunteer name"
-                    meta={meta}
-                    allowAbove={!isMobile}
-                    warningText={dupIssues.length > 0 ? dupIssues.map((iss) => `Double-booked  ${iss.role.name}`).join("; ") : null}
-                    style={{ ...styles.input, flex: 1, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }}
-                  />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+                    <VolunteerNameInput
+                      value={value}
+                      onChange={(val) => setName(role.id, val)}
+                      volunteers={roleVolunteers}
+                      locked={locked}
+                      placeholder="Volunteer name"
+                      meta={meta}
+                      allowAbove={!isMobile}
+                      style={{ ...styles.input, flex: 1, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }}
+                    />
+                    {dupIssues.length > 0 && (
+                      <WarningIcon text={dupIssues.map((iss) => `Conflict with ${iss.role.name}`).join("; ")} />
+                    )}
+                  </div>
                   {role.hasVerse && (
                     <TextFieldWithMeta
                       value={verseValue}
@@ -1751,7 +1755,7 @@ function TextFieldWithMeta({ value, onChange, locked, placeholder, style, meta, 
 
 // volunteer list on its own; that list is only ever edited deliberately
 // from Manage Teams.
-function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, style, meta, allowAbove = true, warningText }) {
+function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, style, meta, allowAbove = true }) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const closeTimerRef = useRef(null);
@@ -1927,12 +1931,8 @@ function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, 
   if (open && coords) frozenPopupRef.current = { filtered, coords };
   const popupData = open ? { filtered, coords } : frozenPopupRef.current;
 
-  const rightPad = (hasMeta ? 34 : 0) + (showSearchIcon ? 30 : 0) + (warningText ? 22 : 0);
+  const rightPad = (hasMeta ? 34 : 0) + (showSearchIcon ? 30 : 0);
   const boxStyle = rightPad ? { ...style, paddingRight: rightPad } : style;
-  // Whichever icons are already reserving space on the right (last-changed
-  // "i" badge, search icon), the warning icon sits just outside all of them,
-  // right at the edge next to the name — never on top of the other icons.
-  const warningRight = 6 + (hasMeta ? 26 : 0) + (showSearchIcon ? 26 : 0);
 
   return (
     <div ref={wrapRef} style={{ position: "relative", flex: 1 }}>
@@ -1990,7 +1990,6 @@ function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, 
         </button>
       )}
       {hasMeta && <LastChangedBadge meta={meta} anchorRef={anchorRef} />}
-      {warningText && <WarningIcon text={warningText} style={{ position: "absolute", top: "50%", transform: "translateY(-50%)", right: warningRight }} />}
       {(open || closing) && !locked && popupData.filtered.length > 0 && popupData.coords && ReactDOM.createPortal(
         <div ref={popupRef}
           className={
@@ -2020,7 +2019,7 @@ function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, 
 // Small pulsing warning icon shown beside a name that's already booked for
 // another role on the same team — replaces the old always-visible "Also
 // serving as X on this team" text. Tap or hover to see which role.
-function WarningIcon({ text, style }) {
+function WarningIcon({ text }) {
   const [show, setShow] = useState(false);
   const [coords, setCoords] = useState(null);
   const [shiftX, setShiftX] = useState(0);
@@ -2063,8 +2062,8 @@ function WarningIcon({ text, style }) {
       <button type="button" ref={btnRef} aria-label={text}
         onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShow((s) => !s); }}
-        style={{ ...styles.warnIconBtn, ...(style || {}) }}>
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.4" strokeLinecap="round">
+        style={styles.warnIconBtn}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3" strokeLinecap="round">
           <line x1="12" y1="7" x2="12" y2="14" />
           <circle cx="12" cy="18" r="0.5" fill="#FFFFFF" />
         </svg>
@@ -2641,8 +2640,8 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                     </td>
                     <td style={styles.td} data-label="Verse">{r.role.hasVerse ? (r.verse || <span style={styles.tdMuted}>—</span>) : <span style={styles.tdMuted}>—</span>}</td>
                     <td style={styles.td} data-label="Status">
-                      {hasConflict ? <span style={styles.badgeConflict}>Conflict</span>
-                        : hasDup ? <span style={styles.badgeDup}>Double-booked</span>
+                      {hasConflict ? <span style={styles.badgeConflict}>Double-booked</span>
+                        : hasDup ? <span style={styles.badgeDup}>Conflict</span>
                         : r.name ? <span style={styles.badgeOk}>Confirmed</span>
                         : <span style={styles.tdMuted}>—</span>}
                     </td>
@@ -2669,8 +2668,8 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                     <div style={styles.mcRoleCol}>
                       <div style={styles.mcRoleName}>{searchQuery ? highlightMatch(r.role.name, searchQuery) : r.role.name}</div>
                       {r.role.hasVerse && r.verse && <div style={styles.mcVerse}>{r.verse}</div>}
-                      {hasConflict && <div style={styles.mcStatusNote}><span style={styles.badgeConflict}>Conflict</span></div>}
-                      {!hasConflict && hasDup && <div style={styles.mcStatusNote}><span style={styles.badgeDup}>Double-booked</span></div>}
+                      {hasConflict && <div style={styles.mcStatusNote}><span style={styles.badgeConflict}>Double-booked</span></div>}
+                      {!hasConflict && hasDup && <div style={styles.mcStatusNote}><span style={styles.badgeDup}>Also on this team</span></div>}
                     </div>
                     <div style={{ ...styles.mcVolunteer, color: r.name ? "#2A2620" : "#B0A582", fontWeight: r.name ? 600 : 400 }}>
                       <span style={r.name && hasConflict ? styles.nameConflict : r.name && hasDup ? styles.nameDup : undefined}>
@@ -2789,8 +2788,8 @@ function MyScheduleView({ config, monthState, userName, year, month }) {
                           {m.name}{!exactMatch && <span style={styles.tdMuted}> (close match)</span>}
                         </td>
                         <td style={styles.td}>
-                          {hasConflict ? <span style={styles.badgeConflict}>Conflict</span>
-                            : hasDup ? <span style={styles.badgeDup}>Double-booked</span>
+                          {hasConflict ? <span style={styles.badgeConflict}>Double-booked</span>
+                            : hasDup ? <span style={styles.badgeDup}>Also on this team</span>
                             : <span style={styles.badgeOk}>Confirmed</span>}
                         </td>
                       </tr>
@@ -3682,7 +3681,7 @@ const styles = {
   input: { width: "100%", boxSizing: "border-box", padding: "12px 14px", borderRadius: 8, border: "1px solid #E4DCC6", borderLeft: "3px solid #D8CFB0", fontSize: 15, fontFamily: "system-ui, sans-serif", color: "#2A2620", outline: "none", background: "#FFFFFF", transition: "box-shadow 0.15s ease, border-color 0.15s ease, border-left-color 0.15s ease" },
   inputConflict: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 0.9s ease-in-out infinite" },
   inputDup: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 0.9s ease-in-out infinite" },
-  warnIconBtn: { flexShrink: 0, width: 15, height: 15, borderRadius: "50%", border: "none", padding: 0, background: "#C24A3A", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", animation: "warnGlowDot 0.9s ease-in-out infinite" },
+  warnIconBtn: { flexShrink: 0, width: 22, height: 22, borderRadius: "50%", border: "none", padding: 0, background: "#C24A3A", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", animation: "warnGlowDot 0.9s ease-in-out infinite" },
   issueNote: { fontSize: 12.5, marginTop: 6, fontFamily: "system-ui, sans-serif", lineHeight: 1.5 },
   editMetaNote: { fontSize: 11.5, marginTop: 5, fontFamily: "system-ui, sans-serif", color: "#A99B72", fontStyle: "italic" },
   editMetaNoteSm: { fontSize: 10.5, marginTop: 2, fontFamily: "system-ui, sans-serif", color: "#A99B72", fontStyle: "italic", fontWeight: 400 },
