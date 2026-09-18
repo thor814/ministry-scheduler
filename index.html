@@ -1022,10 +1022,25 @@ function App() {
   // no one in the whole list has "can manage teams" checked yet, Manage
   // Teams stays open to everyone. Without this, the very first save could
   // lock everyone out with no way back in through the app.
-  const hasRestrictionEntry = !!config && Object.prototype.hasOwnProperty.call(config.restrictions || {}, userEmail);
+  // Migration safety net: configs saved before this change may still have
+  // Editors-list entries keyed by the old display name/nickname instead of
+  // email. Match by email first (the current, secure behavior); only fall
+  // back to a name-keyed entry if this account has no email key yet, so
+  // nobody gets silently locked out while the list is being migrated. Once
+  // an entry is re-saved through the Editors list it's always keyed by
+  // email, so this fallback naturally stops applying to it.
   const restrictionsObj = config ? (config.restrictions || {}) : {};
+  const legacyNameKey = normKey(userName);
+  const matchedRestrictionKey = !config
+    ? null
+    : Object.prototype.hasOwnProperty.call(restrictionsObj, userEmail)
+    ? userEmail
+    : (legacyNameKey && !legacyNameKey.includes("@") && Object.prototype.hasOwnProperty.call(restrictionsObj, legacyNameKey))
+    ? legacyNameKey
+    : null;
+  const hasRestrictionEntry = !!matchedRestrictionKey;
   const noManagerSetYet = !Object.values(restrictionsObj).some((v) => normalizeRestriction(v).canManage);
-  const restrictionEntry = config ? normalizeRestriction((config.restrictions || {})[userEmail]) : { teams: [], canManage: false };
+  const restrictionEntry = matchedRestrictionKey ? normalizeRestriction(restrictionsObj[matchedRestrictionKey]) : { teams: [], canManage: false };
   const allowedTeamIds = restrictionEntry.teams;
   const canManage = (hasRestrictionEntry && restrictionEntry.canManage) || noManagerSetYet;
   const canEditServiceInfo = allowedTeamIds.includes(ADMIN_TEAM_ID);
@@ -3557,7 +3572,10 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
           Service Lead ministry to be checked, and Manage Teams requires the "can also
           open Manage Teams" box below. Access is matched by login email, not by the
           nickname someone typed at signup — that nickname is only used to match their
-          name against the schedule and has no effect on what they can edit. Anyone
+          name against the schedule and has no effect on what they can edit. If an entry
+          below still looks like a name instead of an email, that's a leftover from
+          before this list switched to email-based access — edit it, replace it with
+          that person's actual login email, and save so it stays secure. Anyone
           whose email is NOT on this list cannot edit anything, and cannot open Manage
           Teams — the app is view only for them until they're added. Make sure at least
           one email here always has "can manage teams" checked, or no one will be able
