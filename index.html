@@ -729,7 +729,7 @@ function AuthGate({ auth, onSignedIn, onBack }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
           {mode === "signup" && (
             <input value={displayName} onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Your name (e.g. Juan Dela Cruz)" style={styles.input} autoFocus />
+              placeholder="Your name (e.g. Zero Torres)" style={styles.input} autoFocus />
           )}
           <input value={email} onChange={(e) => setEmail(e.target.value)} type="email"
             placeholder="Email" style={styles.input} autoFocus={mode !== "signup"}
@@ -855,7 +855,7 @@ function QuickView({ config, monthState, year, month, onPrevMonth, onNextMonth, 
               <div className="no-print" style={{ ...styles.lightCard, marginBottom: 16, maxWidth: 420 }}>
                 <div style={styles.fieldLabel}>Your name</div>
                 <input type="text" value={guestName} onChange={(e) => setGuestName(e.target.value)}
-                  placeholder="e.g. Juan Dela Cruz" style={styles.input} />
+                  placeholder="e.g. Zerah Torres" style={styles.input} />
               </div>
               {norm(guestName) ? (
                 <MyScheduleView config={config} monthState={monthState} userName={guestName} year={year} month={month} />
