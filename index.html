@@ -646,6 +646,20 @@ function EntryChoice({ onQuickView, onLogin }) {
 // list in Manage Teams, which is keyed by the person's registered email —
 // so a team leader adds someone by their email, and that person's nickname
 // can be anything and can even be changed later without affecting access.
+// Friendly error messages for the "change password" flow (re-authenticating
+// with the current password, then setting a new one). Kept separate from
+// AuthGate's own friendlyError since the failure cases differ slightly (e.g.
+// a wrong "current password" here isn't the same as a wrong sign-in password).
+function passwordErrorMessage(err) {
+  const code = err && err.code;
+  if (code === "auth/wrong-password" || code === "auth/invalid-credential" || code === "auth/invalid-login-credentials") return "That's not your current password.";
+  if (code === "auth/weak-password") return "New password should be at least 6 characters.";
+  if (code === "auth/requires-recent-login") return "For security, please sign out and sign in again, then retry changing your password.";
+  if (code === "auth/too-many-requests") return "Too many attempts — please wait a bit and try again.";
+  if (code === "auth/network-request-failed") return "Network error — check your connection and try again.";
+  return (err && err.message) || "Couldn't change your password.";
+}
+
 function AuthGate({ auth, onSignedIn, onBack }) {
   const [mode, setMode] = useState("signin"); // "signin" | "signup" | "reset"
   const [email, setEmail] = useState("");
@@ -930,6 +944,22 @@ function App() {
     }
   }, []);
 
+  // Lets a signed-in user change their own account password directly, without
+  // having to sign out and use the "forgot password" email link. Firebase
+  // requires a recent sign-in before allowing a sensitive change like this,
+  // so we re-authenticate with the current password first.
+  const changePassword = useCallback(async (currentPassword, newPassword) => {
+    if (!auth || !auth.currentUser || !auth.currentUser.email) return { ok: false, error: "You're not signed in." };
+    try {
+      const credential = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, currentPassword);
+      await auth.currentUser.reauthenticateWithCredential(credential);
+      await auth.currentUser.updatePassword(newPassword);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: passwordErrorMessage(err) };
+    }
+  }, []);
+
   useEffect(() => {
     if (!FIREBASE_CONFIGURED) return;
     const listener = configRef.on("value", (snapshot) => {
@@ -1123,7 +1153,7 @@ function App() {
         tab={effectiveTab} setTab={setTab} activeTeamId={activeTeam && activeTeam.id}
         setActiveTeamId={setActiveTeamId} userName={userName} onlineUsers={onlineUsers}
         allowedTeamIds={allowedTeamIds} hasRestrictionEntry={hasRestrictionEntry} canManage={canManage} monthLabelText={monthLabel(year, month)}
-        year={year} month={month} onRenameUser={updateNickname}
+        year={year} month={month} onRenameUser={updateNickname} onChangePassword={changePassword}
         onPrevMonth={() => shiftMonth(-1)} onNextMonth={() => shiftMonth(1)} isMobile={isMobile} />
       <main className="app-main" style={{ ...styles.main, ...(isMobile ? styles.mainMobile : {}) }}>
         {isMobile && (
@@ -1246,9 +1276,10 @@ function initials(name) {
 
 const TAB_ICONS = { myschedule: "🗓️", assign: "👥", info: "📝", master: "📋", manage: "⚙️" };
 
-function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab, activeTeamId, setActiveTeamId, userName, onlineUsers, allowedTeamIds, hasRestrictionEntry, canManage, monthLabelText, year, month, onPrevMonth, onNextMonth, isMobile, onRenameUser }) {
+function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab, activeTeamId, setActiveTeamId, userName, onlineUsers, allowedTeamIds, hasRestrictionEntry, canManage, monthLabelText, year, month, onPrevMonth, onNextMonth, isMobile, onRenameUser, onChangePassword }) {
   const others = (onlineUsers || []).filter((u) => norm(u.name).toLowerCase() !== norm(userName).toLowerCase());
   const [renaming, setRenaming] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const switchUser = () => {
     if (auth) auth.signOut();
   };
@@ -1278,8 +1309,15 @@ function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab
             </nav>
           </React.Fragment>
         )}
-        {onRenameUser && (
-          <button onClick={() => setRenaming(true)} style={styles.compactEditNickname} aria-label="Edit your name" title="Edit your name">✎</button>
+        {(onRenameUser || onChangePassword) && (
+          <div style={{ marginTop: "auto", display: "flex", gap: 6, flexShrink: 0 }}>
+            {onRenameUser && (
+              <button onClick={() => setRenaming(true)} style={{ ...styles.compactEditNickname, marginTop: 0 }} aria-label="Edit your name" title="Edit your name">✎</button>
+            )}
+            {onChangePassword && (
+              <button onClick={() => setChangingPassword(true)} style={{ ...styles.compactEditNickname, marginTop: 0 }} aria-label="Change password" title="Change password">🔒</button>
+            )}
+          </div>
         )}
         <button onClick={switchUser} style={styles.compactSwitchUser} aria-label="Switch user" title={`${userName} — tap to switch`}>
           <span style={styles.compactSwitchAvatar}>{initials(userName)}</span>
@@ -1287,6 +1325,9 @@ function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab
         </button>
         {renaming && (
           <RenameModal currentName={userName} onRenameUser={onRenameUser} onDone={() => setRenaming(false)} />
+        )}
+        {changingPassword && (
+          <ChangePasswordModal onChangePassword={onChangePassword} onDone={() => setChangingPassword(false)} />
         )}
       </aside>
     );
@@ -1312,6 +1353,9 @@ function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab
               {onRenameUser && (
                 <button onClick={() => setRenaming(true)} style={styles.editNicknameBtn} aria-label="Edit your name" title="Edit your name">✎</button>
               )}
+              {onChangePassword && (
+                <button onClick={() => setChangingPassword(true)} style={styles.editNicknameBtn} aria-label="Change password" title="Change password">🔒</button>
+              )}
             </div>
             {others.map((u) => (
               <div key={u.id} style={styles.presenceRow}>
@@ -1324,6 +1368,9 @@ function Sidebar({ config, monthState, week, setWeek, slot, setSlot, tab, setTab
         )}
         {renaming && (
           <RenameModal currentName={userName} onRenameUser={onRenameUser} onDone={() => setRenaming(false)} />
+        )}
+        {changingPassword && (
+          <ChangePasswordModal onChangePassword={onChangePassword} onDone={() => setChangingPassword(false)} />
         )}
 
         <div style={styles.sectionLabel}>Month</div>
@@ -1629,6 +1676,86 @@ function RenameModal({ currentName, onRenameUser, onDone }) {
             {busy ? "Saving…" : "Save"}
           </button>
         </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// Lets a signed-in user change their own account password from inside the
+// app, instead of having to sign out and use the "forgot password" email
+// link. Firebase requires a recent sign-in for a change like this, so the
+// user re-enters their current password first, which we use to re-
+// authenticate before setting the new one.
+function ChangePasswordModal({ onChangePassword, onDone }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onDone(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onDone]);
+
+  const save = async () => {
+    setError("");
+    if (!currentPassword) { setError("Enter your current password."); return; }
+    if (!newPassword || newPassword.length < 6) { setError("New password should be at least 6 characters."); return; }
+    if (newPassword !== confirmPassword) { setError("New passwords don't match."); return; }
+    setBusy(true);
+    const result = await onChangePassword(currentPassword, newPassword);
+    setBusy(false);
+    if (result && result.ok) {
+      setDone(true);
+    } else {
+      setError((result && result.error) || "Couldn't change your password.");
+    }
+  };
+
+  return ReactDOM.createPortal(
+    <div className="no-print" style={styles.modalOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) onDone(); }}>
+      <div style={styles.modalCard}>
+        <div style={styles.modalIconRow}>
+          <div style={{ ...styles.modalIconBadge, background: "#1F3864" }}>🔒</div>
+          <div style={styles.modalTitle}>Change Password</div>
+        </div>
+        {done ? (
+          <React.Fragment>
+            <div style={styles.modalBody}>Your password has been updated.</div>
+            <div style={styles.modalActions}>
+              <button onClick={onDone} style={{ ...styles.smallBtn, padding: "9px 18px" }}>Done</button>
+            </div>
+          </React.Fragment>
+        ) : (
+          <React.Fragment>
+            <div style={styles.modalBody}>
+              Enter your current password, then choose a new one.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: error ? 8 : 16 }}>
+              <input type="password" value={currentPassword} autoFocus autoComplete="current-password"
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                placeholder="Current password" style={styles.input} />
+              <input type="password" value={newPassword} autoComplete="new-password"
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="New password" style={styles.input} />
+              <input type="password" value={confirmPassword} autoComplete="new-password"
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+                placeholder="Confirm new password" style={styles.input} />
+            </div>
+            {error && <div style={{ color: "#A6402F", fontSize: 12.5, fontFamily: "system-ui, sans-serif", marginBottom: 16 }}>{error}</div>}
+            <div style={styles.modalActions}>
+              <button onClick={onDone} style={styles.modalCancelBtn} disabled={busy}>Cancel</button>
+              <button onClick={save} style={{ ...styles.smallBtn, padding: "9px 18px", opacity: busy ? 0.6 : 1 }} disabled={busy}>
+                {busy ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </React.Fragment>
+        )}
       </div>
     </div>,
     document.body
