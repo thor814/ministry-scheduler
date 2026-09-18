@@ -1817,11 +1817,18 @@ function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, 
     // filled in. allowAbove === false keeps it pinned below no matter what.
     const below = allowAbove === false || spaceBelow >= 120 || spaceBelow >= spaceAbove;
     const maxHeight = Math.max(100, Math.min(240, below ? spaceBelow : spaceAbove));
-    setCoords(
-      below
-        ? { left: rect.left, width: rect.width, top: rect.bottom + gap, bottom: null, maxHeight }
-        : { left: rect.left, width: rect.width, top: null, bottom: layoutHeight - rect.top + gap, maxHeight }
-    );
+    if (below) {
+      let top = rect.bottom + gap;
+      // Clamp so the popup never runs off the bottom of the visible viewport,
+      // even when allowAbove === false forces it to stay below no matter what
+      // (e.g. the very last field on the page, like Benediction, where there
+      // isn't enough real room underneath it).
+      const maxTop = visibleBottom - margin - maxHeight;
+      if (top > maxTop) top = Math.max(visibleTop + margin, maxTop);
+      setCoords({ left: rect.left, width: rect.width, top, bottom: null, maxHeight });
+    } else {
+      setCoords({ left: rect.left, width: rect.width, top: null, bottom: layoutHeight - rect.top + gap, maxHeight });
+    }
   }, [allowAbove]);
 
   // Tapping the box on a touchscreen just shows the picker — no keyboard,
