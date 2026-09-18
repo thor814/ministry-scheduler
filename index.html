@@ -1,7 +1,3 @@
-
-
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1529,6 +1525,8 @@ function ClearNamesModal({ teamName, onCancel, onConfirm }) {
 function LastChangedBadge({ meta, anchorRef, align }) {
   const [show, setShow] = useState(false);
   const [coords, setCoords] = useState(null);
+  const [shiftX, setShiftX] = useState(0);
+  const tooltipRef = useRef(null);
   const metaTime = metaTimeText(meta);
   const hasMeta = hasMetaInfo(meta);
 
@@ -1549,6 +1547,18 @@ function LastChangedBadge({ meta, anchorRef, align }) {
       window.removeEventListener("resize", updateCoords);
     };
   }, [show, updateCoords]);
+
+  // Nudge the tooltip back onto the screen if it would spill past the
+  // left/right edge once its actual rendered width is known.
+  useEffect(() => {
+    if (!show || !coords || !tooltipRef.current) { setShiftX(0); return; }
+    const margin = 8;
+    const rect = tooltipRef.current.getBoundingClientRect();
+    let shift = 0;
+    if (rect.right > window.innerWidth - margin) shift -= (rect.right - (window.innerWidth - margin));
+    if (rect.left + shift < margin) shift += (margin - (rect.left + shift));
+    setShiftX(shift);
+  }, [show, coords]);
 
   if (!hasMeta) return null;
 
@@ -1576,25 +1586,27 @@ function LastChangedBadge({ meta, anchorRef, align }) {
         }}
       >
         <span style={{
-          position: "absolute", fontSize: 13, fontWeight: 700, fontFamily: "Georgia, serif",
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 13, fontWeight: 700, fontFamily: "Georgia, serif",
           color: "#A99B72", lineHeight: 1,
           opacity: show ? 0 : 1, transform: show ? "scale(0.4) rotate(-20deg)" : "scale(1) rotate(0deg)",
           transition: "opacity 0.18s ease, transform 0.18s ease",
           pointerEvents: "none", WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none",
         }}>i</span>
         <img src="./icons/victory.png" alt="" draggable="false" style={{
-          position: "absolute", width: "100%", height: "100%", objectFit: "cover", objectPosition: "50% 50%", borderRadius: "50%",
+          position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "50% 50%", borderRadius: "50%",
           opacity: show ? 1 : 0, transform: show ? "scale(1) rotate(0deg)" : "scale(0.4) rotate(20deg)",
           transition: "opacity 0.18s ease, transform 0.18s ease",
           pointerEvents: "none", WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none",
         }} />
       </button>
       {show && coords && ReactDOM.createPortal(
-        <div className="no-print" style={{
+        <div ref={tooltipRef} className="no-print" style={{
           position: "fixed", top: coords.top, right: coords.right, zIndex: 1000001,
           background: "#2A2620", color: "#F6F1E4", fontSize: 11.5, fontStyle: "italic",
           fontFamily: "system-ui, sans-serif", padding: "6px 10px", borderRadius: 6,
           whiteSpace: "nowrap", boxShadow: "0 6px 14px rgba(0,0,0,0.25)", pointerEvents: "none",
+          transform: `translateX(${shiftX}px)`,
         }}>
           Last changed by {meta.by}{metaTime ? ` · ${metaTime}` : ""}
         </div>,
@@ -1615,7 +1627,9 @@ function LastChangedBadge({ meta, anchorRef, align }) {
 function MasterEditInfo({ meta, style }) {
   const [show, setShow] = useState(false);
   const [coords, setCoords] = useState(null);
+  const [shiftX, setShiftX] = useState(0);
   const btnRef = useRef(null);
+  const tooltipRef = useRef(null);
   const metaTime = metaTimeText(meta);
   const hasMeta = hasMetaInfo(meta);
 
@@ -1637,6 +1651,19 @@ function MasterEditInfo({ meta, style }) {
     };
   }, [show, updateCoords]);
 
+  // Once the tooltip is actually in the DOM, measure it and nudge it back
+  // onto the screen if it would otherwise spill past the left/right edge —
+  // this is what keeps "Last changed by ..." readable near screen edges.
+  useEffect(() => {
+    if (!show || !coords || !tooltipRef.current) { setShiftX(0); return; }
+    const margin = 8;
+    const rect = tooltipRef.current.getBoundingClientRect();
+    let shift = 0;
+    if (rect.right > window.innerWidth - margin) shift -= (rect.right - (window.innerWidth - margin));
+    if (rect.left + shift < margin) shift += (margin - (rect.left + shift));
+    setShiftX(shift);
+  }, [show, coords]);
+
   if (!hasMeta) return null;
 
   return (
@@ -1655,25 +1682,27 @@ function MasterEditInfo({ meta, style }) {
         style={{ ...styles.masterMetaBtn, background: show ? "#D8CFB0" : "transparent", ...(style || {}) }}
       >
         <span style={{
-          position: "absolute", fontSize: 10.5, fontWeight: 700, fontFamily: "Georgia, serif",
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 10.5, fontWeight: 700, fontFamily: "Georgia, serif",
           color: "#A99B72", lineHeight: 1,
           opacity: show ? 0 : 1, transform: show ? "scale(0.4) rotate(-20deg)" : "scale(1) rotate(0deg)",
           transition: "opacity 0.18s ease, transform 0.18s ease",
           pointerEvents: "none", WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none",
         }}>i</span>
         <img src="./icons/victory.png" alt="" draggable="false" style={{
-          position: "absolute", width: "100%", height: "100%", objectFit: "cover", objectPosition: "50% 50%", borderRadius: "50%",
+          position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "50% 50%", borderRadius: "50%",
           opacity: show ? 1 : 0, transform: show ? "scale(1) rotate(0deg)" : "scale(0.4) rotate(20deg)",
           transition: "opacity 0.18s ease, transform 0.18s ease",
           pointerEvents: "none", WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none",
         }} />
       </button>
       {show && coords && ReactDOM.createPortal(
-        <div className="no-print" style={{
+        <div ref={tooltipRef} className="no-print" style={{
           position: "fixed", top: coords.top, left: coords.left, zIndex: 1000001,
           background: "#2A2620", color: "#F6F1E4", fontSize: 11.5, fontStyle: "italic",
           fontFamily: "system-ui, sans-serif", padding: "6px 10px", borderRadius: 6,
           whiteSpace: "nowrap", boxShadow: "0 6px 14px rgba(0,0,0,0.25)", pointerEvents: "none",
+          transform: `translateX(${shiftX}px)`,
         }}>
           Last changed by {meta.by}{metaTime ? ` · ${metaTime}` : ""}
         </div>,
@@ -3578,10 +3607,10 @@ const styles = {
   mcTeamHeader: { background: "linear-gradient(90deg, #1F3864 0%, #24406F 100%)", color: "#EFE7D3", fontFamily: "system-ui, sans-serif", fontWeight: 700, fontSize: 12, letterSpacing: 0.6, textTransform: "uppercase", padding: "11px 18px", borderBottom: "1px solid rgba(255,255,255,0.1)" },
   mcRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, padding: "14px 18px" },
   mcRoleCol: { flex: 1, minWidth: 0 },
-  mcRoleName: { fontFamily: "system-ui, sans-serif", fontSize: 14.5, fontWeight: 600, color: "#2A2620" },
+  mcRoleName: { fontFamily: "system-ui, sans-serif", fontSize: 14.5, fontWeight: 600, color: "#2A2620", overflowWrap: "anywhere", wordBreak: "break-word" },
   mcVerse: { fontFamily: "system-ui, sans-serif", fontSize: 12, color: "#7A6E4E", marginTop: 3 },
   mcStatusNote: { marginTop: 6 },
-  mcVolunteer: { fontFamily: "system-ui, sans-serif", fontSize: 14.5, textAlign: "right", flexShrink: 0, maxWidth: "50%" },
+  mcVolunteer: { fontFamily: "system-ui, sans-serif", fontSize: 14.5, textAlign: "right", flexShrink: 0, maxWidth: "50%", overflowWrap: "anywhere", wordBreak: "break-word" },
   mcOpen: { color: "#B0A582", fontStyle: "italic", fontSize: 13.5 },
   table: { minWidth: 640, borderCollapse: "collapse", fontFamily: "system-ui, sans-serif", fontSize: 13.5, width: "100%" },
   th: { textAlign: "left", padding: "13px 18px", background: "#EFE7D3", color: "#5C5230", fontWeight: 700, fontSize: 11.5, letterSpacing: 0.4, textTransform: "uppercase", borderBottom: "2px solid #1F3864" },
