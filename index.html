@@ -2033,12 +2033,9 @@ function WarningIcon({ text, style }) {
   useEffect(() => {
     if (!show) return;
     updateCoords();
-    const handleOutside = (e) => { if (btnRef.current && !btnRef.current.contains(e.target)) setShow(false); };
-    document.addEventListener("mousedown", handleOutside);
     window.addEventListener("scroll", updateCoords, true);
     window.addEventListener("resize", updateCoords);
     return () => {
-      document.removeEventListener("mousedown", handleOutside);
       window.removeEventListener("scroll", updateCoords, true);
       window.removeEventListener("resize", updateCoords);
     };
@@ -2056,9 +2053,17 @@ function WarningIcon({ text, style }) {
 
   return (
     <React.Fragment>
-      <button type="button" ref={btnRef} aria-label={text}
-        onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShow((s) => !s); }}
+      <button
+        type="button"
+        ref={btnRef}
+        aria-label={text}
+        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); updateCoords(); setShow(true); }}
+        onMouseUp={() => setShow(false)}
+        onMouseLeave={() => setShow(false)}
+        onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); updateCoords(); setShow(true); }}
+        onTouchEnd={() => setShow(false)}
+        onTouchCancel={() => setShow(false)}
+        onContextMenu={(e) => e.preventDefault()}
         style={{ ...styles.warnIconBtn, ...(style || {}) }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C24A3A" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 3.5 L22 20.5 H2 Z" />
