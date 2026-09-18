@@ -1,3 +1,7 @@
+
+
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -90,8 +94,8 @@
     50%      { box-shadow: 0 0 10px 3px rgba(194,74,58,0.55); }
   }
   @keyframes warnGlowDot {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(194,74,58,0.55); }
-    50%      { box-shadow: 0 0 7px 3px rgba(194,74,58,0.65); }
+    0%, 100% { filter: drop-shadow(0 0 0 rgba(194,74,58,0)); }
+    50%      { filter: drop-shadow(0 0 3px rgba(194,74,58,0.9)); }
   }
   @keyframes warnTextGlow {
     0%, 100% { text-shadow: 0 0 0 rgba(194,74,58,0); }
@@ -1442,21 +1446,17 @@ function AssignView({ config, updateConfig, monthState, updateMonthState, week, 
               <div style={{ ...styles.roleName, ...(isMobile ? { width: "100%", paddingTop: 0 } : {}) }}><span style={styles.roleNameDot} />{role.name}</div>
                 <div style={{ ...styles.roleInputWrap, ...(isMobile ? { width: "100%" } : {}) }}>
                 <div style={{ display: "flex", gap: 10, ...(isMobile ? { flexDirection: "column" } : {}) }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-                    <VolunteerNameInput
-                      value={value}
-                      onChange={(val) => setName(role.id, val)}
-                      volunteers={roleVolunteers}
-                      locked={locked}
-                      placeholder="Volunteer name"
-                      meta={meta}
-                      allowAbove={!isMobile}
-                      style={{ ...styles.input, flex: 1, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }}
-                    />
-                    {dupIssues.length > 0 && (
-                      <WarningIcon text={dupIssues.map((iss) => `Conflict with ${iss.role.name}`).join("; ")} />
-                    )}
-                  </div>
+                  <VolunteerNameInput
+                    value={value}
+                    onChange={(val) => setName(role.id, val)}
+                    volunteers={roleVolunteers}
+                    locked={locked}
+                    placeholder="Volunteer name"
+                    meta={meta}
+                    allowAbove={!isMobile}
+                    warningText={dupIssues.length > 0 ? dupIssues.map((iss) => `Also serving as ${iss.role.name} on this team`).join("; ") : null}
+                    style={{ ...styles.input, flex: 1, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }}
+                  />
                   {role.hasVerse && (
                     <TextFieldWithMeta
                       value={verseValue}
@@ -1755,7 +1755,7 @@ function TextFieldWithMeta({ value, onChange, locked, placeholder, style, meta, 
 
 // volunteer list on its own; that list is only ever edited deliberately
 // from Manage Teams.
-function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, style, meta, allowAbove = true }) {
+function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, style, meta, allowAbove = true, warningText }) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const closeTimerRef = useRef(null);
@@ -1969,6 +1969,7 @@ function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, 
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {value || placeholder}
           </span>
+          {warningText && <WarningIcon text={warningText} style={{ marginLeft: 6 }} />}
         </div>
       )}
       {showSearchIcon && (
@@ -2019,7 +2020,7 @@ function VolunteerNameInput({ value, onChange, volunteers, locked, placeholder, 
 // Small pulsing warning icon shown beside a name that's already booked for
 // another role on the same team — replaces the old always-visible "Also
 // serving as X on this team" text. Tap or hover to see which role.
-function WarningIcon({ text }) {
+function WarningIcon({ text, style }) {
   const [show, setShow] = useState(false);
   const [coords, setCoords] = useState(null);
   const [shiftX, setShiftX] = useState(0);
@@ -2062,10 +2063,11 @@ function WarningIcon({ text }) {
       <button type="button" ref={btnRef} aria-label={text}
         onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShow((s) => !s); }}
-        style={styles.warnIconBtn}>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3" strokeLinecap="round">
-          <line x1="12" y1="7" x2="12" y2="14" />
-          <circle cx="12" cy="18" r="0.5" fill="#FFFFFF" />
+        style={{ ...styles.warnIconBtn, ...(style || {}) }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C24A3A" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 3.5 L22 20.5 H2 Z" />
+          <line x1="12" y1="9.5" x2="12" y2="14" />
+          <circle cx="12" cy="17.2" r="0.6" fill="#C24A3A" stroke="none" />
         </svg>
       </button>
       {show && coords && ReactDOM.createPortal(
@@ -2641,7 +2643,7 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                     <td style={styles.td} data-label="Verse">{r.role.hasVerse ? (r.verse || <span style={styles.tdMuted}>—</span>) : <span style={styles.tdMuted}>—</span>}</td>
                     <td style={styles.td} data-label="Status">
                       {hasConflict ? <span style={styles.badgeConflict}>Double-booked</span>
-                        : hasDup ? <span style={styles.badgeDup}>Conflict</span>
+                        : hasDup ? <span style={styles.badgeDup}>Also on this team</span>
                         : r.name ? <span style={styles.badgeOk}>Confirmed</span>
                         : <span style={styles.tdMuted}>—</span>}
                     </td>
@@ -3681,7 +3683,7 @@ const styles = {
   input: { width: "100%", boxSizing: "border-box", padding: "12px 14px", borderRadius: 8, border: "1px solid #E4DCC6", borderLeft: "3px solid #D8CFB0", fontSize: 15, fontFamily: "system-ui, sans-serif", color: "#2A2620", outline: "none", background: "#FFFFFF", transition: "box-shadow 0.15s ease, border-color 0.15s ease, border-left-color 0.15s ease" },
   inputConflict: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 0.9s ease-in-out infinite" },
   inputDup: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 0.9s ease-in-out infinite" },
-  warnIconBtn: { flexShrink: 0, width: 22, height: 22, borderRadius: "50%", border: "none", padding: 0, background: "#C24A3A", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", animation: "warnGlowDot 0.9s ease-in-out infinite" },
+  warnIconBtn: { flexShrink: 0, width: 16, height: 16, border: "none", padding: 0, background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", animation: "warnGlowDot 0.9s ease-in-out infinite" },
   issueNote: { fontSize: 12.5, marginTop: 6, fontFamily: "system-ui, sans-serif", lineHeight: 1.5 },
   editMetaNote: { fontSize: 11.5, marginTop: 5, fontFamily: "system-ui, sans-serif", color: "#A99B72", fontStyle: "italic" },
   editMetaNoteSm: { fontSize: 10.5, marginTop: 2, fontFamily: "system-ui, sans-serif", color: "#A99B72", fontStyle: "italic", fontWeight: 400 },
