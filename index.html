@@ -1451,7 +1451,7 @@ function AssignView({ config, updateConfig, monthState, updateMonthState, week, 
                   <div style={{ ...styles.issueNote, color: hasConflict ? "#8C2F22" : "#8A6A1A" }}>
                     {issues.map((iss, idx) => (
                       <div key={idx}>
-                        {iss.type === "conflict" ? `Also booked for ${iss.team.name} — ${iss.role.name}` : `Also serving as ${iss.role.name} on this team`}
+                        {iss.type === "conflict" ? `Also booked for ${iss.team.name} — ${iss.role.name}` : `Conflict with ${iss.role.name}`}
                       </div>
                     ))}
                   </div>
