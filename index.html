@@ -640,11 +640,12 @@ function EntryChoice({ onQuickView, onLogin }) {
 // of a self-reported name. "Sign in" is for people who already created an
 // account; "Create account" lets a first-time volunteer set one up
 // themselves without needing Firebase console access. The name they enter
-// at signup becomes their Firebase displayName, and that's what the rest
-// of the app (presence, the Editors list in Manage Teams, etc.) uses as
-// their "userName" — so an existing editor should sign up using the exact
-// same name their team leader already added to the Editors list, to keep
-// their edit access.
+// at signup becomes their Firebase displayName ("nickname"), which is only
+// used for presence and for matching their name against the schedule (see
+// MyScheduleView). Edit access itself is decided purely by the Editors
+// list in Manage Teams, which is keyed by the person's registered email —
+// so a team leader adds someone by their email, and that person's nickname
+// can be anything and can even be changed later without affecting access.
 function AuthGate({ auth, onSignedIn, onBack }) {
   const [mode, setMode] = useState("signin"); // "signin" | "signup" | "reset"
   const [email, setEmail] = useState("");
@@ -720,7 +721,7 @@ function AuthGate({ auth, onSignedIn, onBack }) {
         </h1>
         <p style={styles.setupText}>
           {mode === "signup"
-            ? "Set up your login for the scheduler. Use the exact same name your team leader already added to the Editors list, so your edit access carries over."
+            ? "Set up your login for the scheduler. Your edit access depends on the email you sign up with being added to the Editors list by your team leader — the name below is just how you'll show up on the schedule."
             : mode === "reset"
             ? "Enter the email on your account and we'll send you a reset link."
             : "Sign in to view and edit the schedule."}
@@ -886,6 +887,12 @@ function App() {
   const [authUser, setAuthUser] = useState(undefined); // undefined = checking, null = signed out
   const [entryScreen, setEntryScreen] = useState("choice"); // "choice" | "login" | "quickview" — only used while signed out
   const userName = authUser ? norm(authUser.displayName || (authUser.email || "").split("@")[0]) : "";
+  // Permission lookups key off the registered email, not the display name/
+  // nickname — a nickname is easy for anyone to type at signup and would
+  // otherwise let someone claim another editor's access just by matching
+  // their name. userName above is still used for presence and for matching
+  // names typed into the schedule itself.
+  const userEmail = authUser ? normKey(authUser.email || "") : "";
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.matchMedia("(max-width: 860px)").matches : false));
   const saveTimer = useRef(null);
@@ -1015,10 +1022,10 @@ function App() {
   // no one in the whole list has "can manage teams" checked yet, Manage
   // Teams stays open to everyone. Without this, the very first save could
   // lock everyone out with no way back in through the app.
-  const hasRestrictionEntry = !!config && Object.prototype.hasOwnProperty.call(config.restrictions || {}, normKey(userName));
+  const hasRestrictionEntry = !!config && Object.prototype.hasOwnProperty.call(config.restrictions || {}, userEmail);
   const restrictionsObj = config ? (config.restrictions || {}) : {};
   const noManagerSetYet = !Object.values(restrictionsObj).some((v) => normalizeRestriction(v).canManage);
-  const restrictionEntry = config ? normalizeRestriction((config.restrictions || {})[normKey(userName)]) : { teams: [], canManage: false };
+  const restrictionEntry = config ? normalizeRestriction((config.restrictions || {})[userEmail]) : { teams: [], canManage: false };
   const allowedTeamIds = restrictionEntry.teams;
   const canManage = (hasRestrictionEntry && restrictionEntry.canManage) || noManagerSetYet;
   const canEditServiceInfo = allowedTeamIds.includes(ADMIN_TEAM_ID);
@@ -2809,7 +2816,7 @@ function MyScheduleView({ config, monthState, userName, year, month }) {
 function ManageView({ config, updateConfig, monthState, updateMonthState, monthLabelText, isMobile }) {
   const [newTeamName, setNewTeamName] = useState("");
   const [newRoleName, setNewRoleName] = useState({});
-  const [restrictName, setRestrictName] = useState("");
+  const [restrictEmail, setRestrictEmail] = useState("");
   const [restrictTeamIds, setRestrictTeamIds] = useState([]);
   const [restrictCanManage, setRestrictCanManage] = useState(false);
   const [role1, setRole1] = useState("");
@@ -2889,15 +2896,15 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
     setRestrictTeamIds((prev) => (prev.includes(teamId) ? prev.filter((id) => id !== teamId) : [...prev, teamId]));
   };
   const addRestriction = () => {
-    const name = normKey(restrictName);
-    if (!name || restrictTeamIds.length === 0) return;
-    updateConfig((prev) => ({ ...prev, restrictions: { ...(prev.restrictions || {}), [name]: { teams: restrictTeamIds, canManage: restrictCanManage } } }));
-    setRestrictName("");
+    const email = normKey(restrictEmail);
+    if (!email || restrictTeamIds.length === 0) return;
+    updateConfig((prev) => ({ ...prev, restrictions: { ...(prev.restrictions || {}), [email]: { teams: restrictTeamIds, canManage: restrictCanManage } } }));
+    setRestrictEmail("");
     setRestrictTeamIds([]);
     setRestrictCanManage(false);
   };
-  const editRestriction = (name, entry) => {
-    setRestrictName(name);
+  const editRestriction = (email, entry) => {
+    setRestrictEmail(email);
     setRestrictTeamIds(entry.teams);
     setRestrictCanManage(entry.canManage);
   };
@@ -3545,18 +3552,21 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
       <div style={{ marginTop: 28 }}>
         <div style={styles.sectionLabel}>Editors list</div>
         <div style={styles.pairNote}>
-          Type the exact name a person enters on the "Who's this?" screen and check every
-          ministry they're allowed to edit — one or several. Editing Service Details also
-          requires the Service Lead ministry to be checked, and Manage Teams requires the
-          "can also open Manage Teams" box below. Anyone whose name is NOT on this list
-          cannot edit anything, and cannot open Manage Teams — the app is view only for them
-          until they're added. Make sure at least one name here always has "can manage
-          teams" checked, or no one will be able to get back into this screen. This applies
-          across every month.
+          Type the exact email a person signs in with and check every ministry they're
+          allowed to edit — one or several. Editing Service Details also requires the
+          Service Lead ministry to be checked, and Manage Teams requires the "can also
+          open Manage Teams" box below. Access is matched by login email, not by the
+          nickname someone typed at signup — that nickname is only used to match their
+          name against the schedule and has no effect on what they can edit. Anyone
+          whose email is NOT on this list cannot edit anything, and cannot open Manage
+          Teams — the app is view only for them until they're added. Make sure at least
+          one email here always has "can manage teams" checked, or no one will be able
+          to get back into this screen. This applies across every month.
         </div>
         <div style={styles.restrictAddRow}>
-          <input value={restrictName} onChange={(e) => setRestrictName(e.target.value)}
-            placeholder="Name (as they'll type it)" style={styles.roleEditInput}
+          <input value={restrictEmail} onChange={(e) => setRestrictEmail(e.target.value)}
+            placeholder="Email (the one they sign in with)" style={styles.roleEditInput}
+            type="email"
             onKeyDown={(e) => { if (e.key === "Enter") addRestriction(); }} />
         </div>
         <div style={styles.pairGrid}>
@@ -3576,19 +3586,19 @@ function ManageView({ config, updateConfig, monthState, updateMonthState, monthL
         </div>
         {restrictionEntries.length > 0 && (
           <div style={styles.restrictList}>
-            {restrictionEntries.map(([name, raw]) => {
+            {restrictionEntries.map(([email, raw]) => {
               const entry = normalizeRestriction(raw);
               const teamNames = entry.teams
                 .map((id) => (config.teams.find((t) => t.id === id) || {}).name || "(deleted team)")
                 .join(", ");
               return (
-                <div key={name} style={styles.restrictRow}>
-                  <span style={styles.restrictName}>{name}</span>
+                <div key={email} style={styles.restrictRow}>
+                  <span style={styles.restrictName}>{email}</span>
                   <span style={styles.restrictTeam}>
                     can edit: {teamNames || "(none yet)"}{entry.canManage ? " · can manage teams" : ""}
                   </span>
-                  <button onClick={() => editRestriction(name, entry)} style={styles.linkDanger}>Edit</button>
-                  <button onClick={() => removeRestriction(name)} style={styles.linkDanger}>Remove</button>
+                  <button onClick={() => editRestriction(email, entry)} style={styles.linkDanger}>Edit</button>
+                  <button onClick={() => removeRestriction(email)} style={styles.linkDanger}>Remove</button>
                 </div>
               );
             })}
