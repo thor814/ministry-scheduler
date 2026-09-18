@@ -2058,14 +2058,15 @@ function WarningIcon({ text, style }) {
         ref={btnRef}
         aria-label={text}
         onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); updateCoords(); setShow(true); }}
-        onMouseUp={() => setShow(false)}
+        onMouseUp={(e) => { e.preventDefault(); e.stopPropagation(); setShow(false); }}
         onMouseLeave={() => setShow(false)}
         onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); updateCoords(); setShow(true); }}
-        onTouchEnd={() => setShow(false)}
+        onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); setShow(false); }}
         onTouchCancel={() => setShow(false)}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
         onContextMenu={(e) => e.preventDefault()}
-        style={{ ...styles.warnIconBtn, ...(style || {}) }}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C24A3A" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+        style={{ ...styles.warnIconBtn, ...(style || {}) }}>     
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C24A3A" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 3.5 L22 20.5 H2 Z" />
           <line x1="12" y1="9.5" x2="12" y2="14" />
           <circle cx="12" cy="17.2" r="0.6" fill="#C24A3A" stroke="none" />
