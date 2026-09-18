@@ -93,6 +93,10 @@
     0%, 100% { box-shadow: 0 0 0 0 rgba(194,74,58,0.55); }
     50%      { box-shadow: 0 0 7px 3px rgba(194,74,58,0.65); }
   }
+  @keyframes warnTextGlow {
+    0%, 100% { text-shadow: 0 0 0 rgba(194,74,58,0); }
+    50%      { text-shadow: 0 0 6px rgba(194,74,58,0.55); }
+  }
   @page { size: letter; margin: 0.35in; }
   @media print {
     .no-print { display: none !important; }
@@ -1466,7 +1470,7 @@ function AssignView({ config, updateConfig, monthState, updateMonthState, week, 
                   )}
                 </div>
                 {conflictIssues.length > 0 && (
-                  <div style={{ ...styles.issueNote, color: "#8C2F22" }}>
+                  <div style={{ ...styles.issueNote, color: "#8C2F22", fontWeight: 700, animation: "warnTextGlow 0.9s ease-in-out infinite" }}>
                     {conflictIssues.map((iss, idx) => (
                       <div key={idx}>{`Also booked for ${iss.team.name} — ${iss.role.name}`}</div>
                     ))}
@@ -2637,7 +2641,7 @@ function MasterListView({ config, monthState, updateMonthState, week, slot, year
                     <td style={styles.td} data-label="Verse">{r.role.hasVerse ? (r.verse || <span style={styles.tdMuted}>—</span>) : <span style={styles.tdMuted}>—</span>}</td>
                     <td style={styles.td} data-label="Status">
                       {hasConflict ? <span style={styles.badgeConflict}>Double-booked</span>
-                        : hasDup ? <span style={styles.badgeDup}>Also on this team</span>
+                        : hasDup ? <span style={styles.badgeDup}>Conflict</span>
                         : r.name ? <span style={styles.badgeOk}>Confirmed</span>
                         : <span style={styles.tdMuted}>—</span>}
                     </td>
@@ -3675,9 +3679,9 @@ const styles = {
   roleInputWrap: { flex: 1 },
   fieldLabel: { fontSize: 12.5, color: "#7A6E4E", marginBottom: 6, fontFamily: "system-ui, sans-serif", fontWeight: 600 },
   input: { width: "100%", boxSizing: "border-box", padding: "12px 14px", borderRadius: 8, border: "1px solid #E4DCC6", borderLeft: "3px solid #D8CFB0", fontSize: 15, fontFamily: "system-ui, sans-serif", color: "#2A2620", outline: "none", background: "#FFFFFF", transition: "box-shadow 0.15s ease, border-color 0.15s ease, border-left-color 0.15s ease" },
-  inputConflict: { borderColor: "#C24A3A", background: "#FBEEEA" },
-  inputDup: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 1.6s ease-in-out infinite" },
-  warnIconBtn: { flexShrink: 0, width: 22, height: 22, borderRadius: "50%", border: "none", padding: 0, background: "#C24A3A", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", animation: "warnGlowDot 1.6s ease-in-out infinite" },
+  inputConflict: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 0.9s ease-in-out infinite" },
+  inputDup: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 0.9s ease-in-out infinite" },
+  warnIconBtn: { flexShrink: 0, width: 22, height: 22, borderRadius: "50%", border: "none", padding: 0, background: "#C24A3A", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", animation: "warnGlowDot 0.9s ease-in-out infinite" },
   issueNote: { fontSize: 12.5, marginTop: 6, fontFamily: "system-ui, sans-serif", lineHeight: 1.5 },
   editMetaNote: { fontSize: 11.5, marginTop: 5, fontFamily: "system-ui, sans-serif", color: "#A99B72", fontStyle: "italic" },
   editMetaNoteSm: { fontSize: 10.5, marginTop: 2, fontFamily: "system-ui, sans-serif", color: "#A99B72", fontStyle: "italic", fontWeight: 400 },
