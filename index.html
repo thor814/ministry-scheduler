@@ -668,6 +668,13 @@ function AuthGate({ auth, onSignedIn, onBack }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  // Holds the just-signed-in Firebase User object while we wait to find out
+  // whether their email is verified. Kept only so the "Resend verification
+  // email" button below has something to call — we've already signed them
+  // back out (see submit()) since an unverified account shouldn't get into
+  // the app yet.
+  const [unverifiedUser, setUnverifiedUser] = useState(null);
 
   const friendlyError = (err) => {
     const code = err && err.code;
@@ -706,11 +713,40 @@ function AuthGate({ auth, onSignedIn, onBack }) {
       if (mode === "signup") {
         const cred = await auth.createUserWithEmailAndPassword(cleanEmail, password);
         await cred.user.updateProfile({ displayName: norm(displayName) });
-        onSignedIn(auth.currentUser);
+        try { await cred.user.sendEmailVerification(); } catch (e) { /* account is still created even if this fails */ }
+        // Don't drop them straight into the app — require a verified email
+        // first, same as the sign-in check below.
+        await auth.signOut();
+        setPassword("");
+        setUnverifiedUser(null);
+        setMode("signin");
+        setNotice("Account created! We've sent a verification link to " + cleanEmail + " — verify it, then sign in here.");
       } else {
         const cred = await auth.signInWithEmailAndPassword(cleanEmail, password);
+        if (!cred.user.emailVerified) {
+          setUnverifiedUser(cred.user);
+          await auth.signOut();
+          setError("Please verify your email before signing in — check your inbox for the link we sent.");
+          return;
+        }
+        setUnverifiedUser(null);
         onSignedIn(cred.user);
       }
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resendVerification = async () => {
+    if (!unverifiedUser) return;
+    setError("");
+    setNotice("");
+    setBusy(true);
+    try {
+      await unverifiedUser.sendEmailVerification();
+      setNotice("Verification email resent — check your inbox.");
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -722,6 +758,7 @@ function AuthGate({ auth, onSignedIn, onBack }) {
     setMode(next);
     setError("");
     setNotice("");
+    setUnverifiedUser(null);
   };
 
   return (
@@ -749,12 +786,25 @@ function AuthGate({ auth, onSignedIn, onBack }) {
             placeholder="Email" style={styles.input} autoFocus={mode !== "signup"}
             onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
           {mode !== "reset" && (
-            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password"
-              placeholder="Password" style={styles.input}
-              onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+            <div style={styles.passwordFieldWrap}>
+              <input value={password} onChange={(e) => setPassword(e.target.value)} type={showPassword ? "text" : "password"}
+                placeholder="Password" style={{ ...styles.input, paddingRight: 40 }}
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+              <button type="button" onClick={() => setShowPassword((s) => !s)} style={styles.passwordToggleBtn}
+                aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}>
+                {showPassword ? "🙈" : "👁️"}
+              </button>
+            </div>
           )}
           {error && <div style={{ color: "#A6402F", fontSize: 13, fontFamily: "system-ui, sans-serif" }}>{error}</div>}
           {notice && <div style={{ color: "#3B6B3E", fontSize: 13, fontFamily: "system-ui, sans-serif" }}>{notice}</div>}
+          {unverifiedUser && (
+            <button onClick={resendVerification} disabled={busy}
+              style={{ background: "none", border: "none", color: "#1F3864", fontSize: 12.5, cursor: "pointer", fontFamily: "system-ui, sans-serif", padding: 0, textAlign: "left", fontWeight: 600 }}>
+              Resend verification email
+            </button>
+          )}
           <button onClick={submit} disabled={busy} style={{ ...styles.smallBtn, padding: "10px 14px", opacity: busy ? 0.6 : 1 }}>
             {busy ? "Please wait…" : mode === "signup" ? "Create account" : mode === "reset" ? "Send reset email" : "Sign in"}
           </button>
@@ -1694,6 +1744,9 @@ function ChangePasswordModal({ onChangePassword, onDone }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onDone(); };
@@ -1736,16 +1789,34 @@ function ChangePasswordModal({ onChangePassword, onDone }) {
               Enter your current password, then choose a new one.
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: error ? 8 : 16 }}>
-              <input type="password" value={currentPassword} autoFocus autoComplete="current-password"
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                placeholder="Current password" style={styles.input} />
-              <input type="password" value={newPassword} autoComplete="new-password"
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="New password" style={styles.input} />
-              <input type="password" value={confirmPassword} autoComplete="new-password"
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-                placeholder="Confirm new password" style={styles.input} />
+              <div style={styles.passwordFieldWrap}>
+                <input type={showCurrent ? "text" : "password"} value={currentPassword} autoFocus autoComplete="current-password"
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  placeholder="Current password" style={{ ...styles.input, paddingRight: 40 }} />
+                <button type="button" onClick={() => setShowCurrent((s) => !s)} style={styles.passwordToggleBtn}
+                  aria-label={showCurrent ? "Hide password" : "Show password"} title={showCurrent ? "Hide password" : "Show password"}>
+                  {showCurrent ? "🙈" : "👁️"}
+                </button>
+              </div>
+              <div style={styles.passwordFieldWrap}>
+                <input type={showNew ? "text" : "password"} value={newPassword} autoComplete="new-password"
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="New password" style={{ ...styles.input, paddingRight: 40 }} />
+                <button type="button" onClick={() => setShowNew((s) => !s)} style={styles.passwordToggleBtn}
+                  aria-label={showNew ? "Hide password" : "Show password"} title={showNew ? "Hide password" : "Show password"}>
+                  {showNew ? "🙈" : "👁️"}
+                </button>
+              </div>
+              <div style={styles.passwordFieldWrap}>
+                <input type={showConfirm ? "text" : "password"} value={confirmPassword} autoComplete="new-password"
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+                  placeholder="Confirm new password" style={{ ...styles.input, paddingRight: 40 }} />
+                <button type="button" onClick={() => setShowConfirm((s) => !s)} style={styles.passwordToggleBtn}
+                  aria-label={showConfirm ? "Hide password" : "Show password"} title={showConfirm ? "Hide password" : "Show password"}>
+                  {showConfirm ? "🙈" : "👁️"}
+                </button>
+              </div>
             </div>
             {error && <div style={{ color: "#A6402F", fontSize: 12.5, fontFamily: "system-ui, sans-serif", marginBottom: 16 }}>{error}</div>}
             <div style={styles.modalActions}>
@@ -3931,6 +4002,8 @@ const styles = {
   roleInputWrap: { flex: 1 },
   fieldLabel: { fontSize: 12.5, color: "#7A6E4E", marginBottom: 6, fontFamily: "system-ui, sans-serif", fontWeight: 600 },
   input: { width: "100%", boxSizing: "border-box", padding: "12px 14px", borderRadius: 8, border: "1px solid #E4DCC6", borderLeft: "3px solid #D8CFB0", fontSize: 15, fontFamily: "system-ui, sans-serif", color: "#2A2620", outline: "none", background: "#FFFFFF", transition: "box-shadow 0.15s ease, border-color 0.15s ease, border-left-color 0.15s ease" },
+  passwordFieldWrap: { position: "relative", width: "100%" },
+  passwordToggleBtn: { position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#7A6E4E", padding: 8, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" },
   inputConflict: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 0.9s ease-in-out infinite" },
   inputDup: { borderColor: "#C24A3A", background: "#FFFFFF", animation: "warnGlow 0.9s ease-in-out infinite" },
   warnIconBtn: { flexShrink: 0, width: 16, height: 16, border: "none", padding: 0, background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", animation: "warnGlowDot 0.9s ease-in-out infinite" },
@@ -4034,3 +4107,5 @@ root.render(<App />);
 </script>
 </body>
 </html>
+
+  
