@@ -1431,9 +1431,13 @@ function AssignView({ config, updateConfig, monthState, updateMonthState, week, 
           const verseValue = (monthState.verses && monthState.verses[key]) || "";
           const issues = findIssues(config, monthState, week, slot, team.id, role.id, value);
           const hasConflict = issues.some((x) => x.type === "conflict");
-          const hasDup = issues.some((x) => x.type === "duplicate");
+          const hasDup = issues.some((x) => x.type === "duplicate");          
           const dupIssues = issues.filter((x) => x.type === "duplicate");
           const conflictIssues = issues.filter((x) => x.type === "conflict");
+          const warningParts = [];
+          if (dupIssues.length > 0) warningParts.push(`Also serving as ${dupIssues.map((iss) => iss.role.name).join(" & ")} on this team`);
+          if (conflictIssues.length > 0) warningParts.push(`Also booked for ${conflictIssues.map((iss) => `${iss.team.name} — ${iss.role.name}`).join(" & ")}`);
+          const nameWarningText = warningParts.length > 0 ? warningParts.join(" | ") : null;
           const roleVolunteers = (role.volunteers || []).slice().sort((a, b) => a.localeCompare(b));
           const meta = (monthState.editMeta && monthState.editMeta[key]) || null;
           const verseMeta = (monthState.editMeta && monthState.editMeta[key + "__verse"]) || null;
@@ -1450,7 +1454,7 @@ function AssignView({ config, updateConfig, monthState, updateMonthState, week, 
                     placeholder="Volunteer name"
                     meta={meta}
                     allowAbove={!isMobile}
-                    warningText={dupIssues.length > 0 ? dupIssues.map((iss) => `Also serving as ${iss.role.name} on this team`).join("; ") : null}
+                    warningText={nameWarningText}
                     style={{ ...styles.input, flex: 1, ...(hasConflict ? styles.inputConflict : hasDup ? styles.inputDup : {}), ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }}
                   />
                   {role.hasVerse && (
@@ -1464,14 +1468,7 @@ function AssignView({ config, updateConfig, monthState, updateMonthState, week, 
                       style={{ ...styles.input, width: "100%", boxSizing: "border-box", ...(locked ? { background: "#F3EFE2", cursor: "default" } : {}) }}
                     />
                   )}
-                </div>
-                {conflictIssues.length > 0 && (
-                  <div style={{ marginTop: 6 }}>
-                    <WarningIcon
-                      text={`Also booked for ${conflictIssues.map((iss) => `${iss.team.name} — ${iss.role.name}`).join(" & ")}`}
-                    />
-                  </div>
-                )}
+                </div>                
               </div>
             </div>
           );
