@@ -740,22 +740,10 @@ function AuthGate({ auth, onSignedIn, onBack }) {
       if (mode === "signup") {
         const cred = await auth.createUserWithEmailAndPassword(cleanEmail, password);
         await cred.user.updateProfile({ displayName: norm(displayName) });
-        try { await cred.user.sendEmailVerification(); } catch (e) { /* account is still created even if this fails */ }
-        // Don't drop them straight into the app — require a verified email
-        // first, same as the sign-in check below.
-        await auth.signOut();
-        setPassword("");
         setUnverifiedUser(null);
-        setMode("signin");
-        setNotice("Account created! We've sent a verification link to " + cleanEmail + " — verify it, then sign in here.");
+        onSignedIn(cred.user);
       } else {
         const cred = await auth.signInWithEmailAndPassword(cleanEmail, password);
-        if (!cred.user.emailVerified) {
-          setUnverifiedUser(cred.user);
-          await auth.signOut();
-          setError("Please verify your email before signing in — check your inbox for the link we sent.");
-          return;
-        }
         setUnverifiedUser(null);
         onSignedIn(cred.user);
       }
